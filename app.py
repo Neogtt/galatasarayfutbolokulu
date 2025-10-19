@@ -146,6 +146,17 @@ def load_coach_users() -> Dict[str, Dict[str, Any]]:
                 "groups": groups,
             }
 
+        default_username = "ilker"
+    default_user_payload = {
+        "username": default_username,
+        "password": "gs12345!",
+        "coach_name": "İlker",
+        "groups": [],
+    }
+    default_key = norm_key(default_username)
+    if default_key not in users:
+        users[default_key] = default_user_payload
+        
     return users
 
 
