@@ -654,7 +654,7 @@ elif coach_logged_in:
     if login_box.button("Çıkış Yap"):
         st.session_state["coach_auth"] = {"username": None, "coach_name": None, "groups": []}
         st.session_state.pop("coach_panel_date", None)
-        st.experimental_rerun()
+        st.rerun()
 else:
     with login_box.form("coach_login_form"):
         username_input = st.text_input("Kullanıcı Adı")
@@ -670,7 +670,7 @@ else:
                 "groups": user_payload.get("groups", []),
             }
             login_box.success("Giriş başarılı. Koç paneli açılıyor...")
-            st.experimental_rerun()
+            st.rerun()
         else:
             login_box.error("Geçersiz kullanıcı adı veya şifre.")
 
@@ -915,7 +915,7 @@ elif secim == "Üye Yönetimi":
                     yeni_kayit.setdefault(col, None)
                 st.session_state["ogr"] = pd.concat([ogr_df, pd.DataFrame([yeni_kayit])], ignore_index=True)
                 st.success("Öğrenci eklendi.")
-                st.experimental_rerun()
+                st.rerun()
 
     with tab_duzenle:
         ogr_df = st.session_state["ogr"]
@@ -988,7 +988,7 @@ elif secim == "Üye Yönetimi":
                     guncel_df.loc[secilen_indeks, "UyelikYenilemeTercihi"] = duzenle_uyelik_yenileme.strip()
                     st.session_state["ogr"] = guncel_df.reset_index(drop=True)
                     st.success("Öğrenci bilgileri güncellendi.")
-                    st.experimental_rerun()
+                    st.rerun()
 
     with tab_yenile:
         ogr_df = st.session_state["ogr"]
@@ -1050,7 +1050,7 @@ elif secim == "Üye Yönetimi":
                 else:
                     st.success(f"{satir.get('AdSoyad')} için yenileme tamamlandı.")
 
-                st.experimental_rerun()
+                st.rerun()
 
 
     with tab_sil:
@@ -1070,7 +1070,7 @@ elif secim == "Üye Yönetimi":
                     guncel_df = ogr_df.drop(index=silinecekler).reset_index(drop=True)
                     st.session_state["ogr"] = guncel_df
                     st.success("Seçilen öğrenciler silindi.")
-                    st.experimental_rerun()
+                    st.rerun()
 
 
 elif secim == "Tüm Üyelikler":
