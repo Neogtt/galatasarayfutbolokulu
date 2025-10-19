@@ -10,7 +10,7 @@ FUTBOL OKULU — Streamlit (Py3.8+) — OTOMATIK BAŞLIK TESPİTİ
 import io
 from datetime import date
 import datetime as dt
-from typing import Tuple, Optional, List
+from typing import Tuple, Optional, List, Dict, Any
 
 import pandas as pd
 import streamlit as st
@@ -94,6 +94,73 @@ ALIAS_MAP = {
 }
 
 HEADER_HINTS = {"adi","soyadi","telefon","grup","koc","kayit","uyelik","seviye"}
+COACH_PANEL_MENU = "Koç Yoklama Paneli"
+
+
+def load_coach_users() -> Dict[str, Dict[str, Any]]:
+    """Streamlit secrets üzerinden (varsa) koç kullanıcılarını oku."""
+    users: Dict[str, Dict[str, Any]] = {}
+    secrets_block: Optional[Dict[str, Any]] = None
+    try:
+        secrets_block = st.secrets["coach_users"]  # type: ignore[index]
+    except Exception:
+        secrets_block = None
+
+    if secrets_block:
+        for username, payload in secrets_block.items():
+            if not isinstance(payload, (dict,)):
+                continue
+            password = str(payload.get("password", "")).strip()
+            if not password:
+                continue
+            coach_name = payload.get("coach_name") or payload.get("coach") or payload.get("koc")
+            groups_value = payload.get("groups") or payload.get("gruplar") or []
+            if isinstance(groups_value, str):
+                groups = [g.strip() for g in groups_value.split(",") if g.strip()]
+            elif isinstance(groups_value, (list, tuple, set)):
+                groups = [str(g).strip() for g in groups_value if str(g).strip()]
+            else:
+                groups = []
+            users[norm_key(username)] = {
+                "username": str(username).strip(),
+                "password": password,
+                "coach_name": str(coach_name).strip() if coach_name else None,
+                "groups": groups,
+            }
+
+    return users
+
+
+def interpret_attendance_bool(value) -> Optional[bool]:
+    if value is None:
+        return None
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, (int, float)) and not pd.isna(value):
+        return bool(int(value))
+    if isinstance(value, str):
+        nk = norm_key(value)
+        if nk in {"1", "true", "evet", "var", "geldi", "katildi"}:
+            return True
+        if nk in {"0", "false", "hayir", "yok", "gelmedi", "katilmadi"}:
+            return False
+    return None
+
+
+def format_attendance_value(value) -> str:
+    interpreted = interpret_attendance_bool(value)
+    if interpreted is True:
+        return "Katıldı"
+    if interpreted is False:
+        return "Katılmadı"
+    if value is None:
+        return "Kaydedilmedi"
+    if isinstance(value, float) and pd.isna(value):
+        return "Kaydedilmedi"
+    value_str = str(value).strip()
+    if not value_str:
+        return "Kaydedilmedi"
+    return value_str
 
 
 def detect_header_row(df: pd.DataFrame, scan_rows: int = 30) -> int:
@@ -314,6 +381,78 @@ def format_display_value(value) -> str:
     return str(value)
 
 
+def build_coach_attendance_view(coach_name: str, ogr_df: pd.DataFrame, yok_df: pd.DataFrame, target_date: date) -> pd.DataFrame:
+    if ogr_df is None or ogr_df.empty:
+        return pd.DataFrame()
+
+    coach_key = norm_key(coach_name)
+    ogr_tmp = ogr_df.copy()
+    ogr_tmp["KocKey"] = ogr_tmp.get("Koc", "").astype(str).map(norm_key)
+    coach_students = ogr_tmp[ogr_tmp["KocKey"] == coach_key].copy()
+
+    if coach_students.empty:
+        return pd.DataFrame()
+
+    coach_students["ID"] = pd.to_numeric(coach_students.get("ID"), errors="coerce")
+    coach_students["Grup"] = coach_students.get("Grup").fillna("")
+    coach_students["Seviye"] = coach_students.get("Seviye").fillna("")
+
+    yok_filtered = pd.DataFrame()
+    if yok_df is not None and not yok_df.empty:
+        yok_tmp = yok_df.copy()
+        if "Tarih" in yok_tmp.columns:
+            yok_tmp["Tarih"] = pd.to_datetime(yok_tmp.get("Tarih"), errors="coerce").dt.date
+        yok_tmp["KocKey"] = yok_tmp.get("Koc", "").astype(str).map(norm_key)
+        yok_tmp["OgrenciID"] = pd.to_numeric(yok_tmp.get("OgrenciID"), errors="coerce")
+        if "AdSoyad" not in yok_tmp.columns:
+            yok_tmp["AdSoyad"] = ""
+        yok_filtered = yok_tmp[(yok_tmp["KocKey"] == coach_key) & (yok_tmp["Tarih"] == target_date)].copy()
+
+    records: List[Dict[str, Any]] = []
+    attendance_rows: Dict[Any, pd.Series] = {}
+
+    if not yok_filtered.empty:
+        yok_filtered["AdSoyadKey"] = yok_filtered["AdSoyad"].astype(str).map(norm_key)
+        for _, row in yok_filtered.iterrows():
+            sid = row.get("OgrenciID")
+            if not pd.isna(sid):
+                attendance_rows.setdefault(("id", int(sid)), row)
+            name_key = row.get("AdSoyadKey")
+            if name_key:
+                attendance_rows.setdefault(("name", name_key), row)
+
+    for _, student in coach_students.iterrows():
+        sid = student.get("ID")
+        name = student.get("AdSoyad")
+        name_key = norm_key(name)
+
+        att_row = None
+        if not pd.isna(sid):
+            att_row = attendance_rows.get(("id", int(sid)))
+        if att_row is None and name_key:
+            att_row = attendance_rows.get(("name", name_key))
+
+        katildi_raw = att_row.get("Katildi") if att_row is not None else None
+        not_raw = att_row.get("Not") if att_row is not None else ""
+        katildi_bool = interpret_attendance_bool(katildi_raw)
+
+        records.append({
+            "ID": int(sid) if not pd.isna(sid) else student.get("ID"),
+            "Ad Soyad": name,
+            "Grup": student.get("Grup"),
+            "Seviye": student.get("Seviye"),
+            "Katılım": format_attendance_value(katildi_raw),
+            "Not": str(not_raw).strip() if isinstance(not_raw, str) else not_raw,
+            "_katildi_bool": katildi_bool,
+        })
+
+    df = pd.DataFrame(records)
+    if df.empty:
+        return df
+
+    display_cols = ["ID", "Ad Soyad", "Grup", "Seviye", "Katılım", "Not"]
+    return df[display_cols + ["_katildi_bool"]]
+
 
 # ==========================
 # Yaş Hesaplama
@@ -399,6 +538,49 @@ tah = st.session_state["tah"]
 # Genel Bakış ve Menü
 # ==========================
 
+coach_users = load_coach_users()
+if "coach_auth" not in st.session_state:
+    st.session_state["coach_auth"] = {"username": None, "coach_name": None, "groups": []}
+
+coach_auth = st.session_state["coach_auth"]
+coach_logged_in = bool(coach_auth.get("username"))
+
+with st.sidebar.expander("Koç Girişi", expanded=not coach_logged_in) as login_box:
+    if not coach_users:
+        login_box.info(
+            "Koç giriş bilgileri tanımlanmadı. `secrets.toml` dosyasına `coach_users` "
+            "başlığı altında kullanıcı adı ve şifre ekleyin."
+        )
+    elif coach_logged_in:
+        coach_display = coach_auth.get("coach_name") or coach_auth.get("username")
+        login_box.success(f"Giriş yapan koç: {coach_display}")
+        assigned_groups = coach_auth.get("groups") or []
+        if assigned_groups:
+            login_box.caption("Gruplar: " + ", ".join(assigned_groups))
+        if login_box.button("Çıkış Yap"):
+            st.session_state["coach_auth"] = {"username": None, "coach_name": None, "groups": []}
+            st.session_state.pop("coach_panel_date", None)
+            st.experimental_rerun()
+    else:
+        with login_box.form("coach_login_form"):
+            username_input = st.text_input("Kullanıcı Adı")
+            password_input = st.text_input("Şifre", type="password")
+            submit_login = st.form_submit_button("Giriş Yap")
+        if submit_login:
+            key = norm_key(username_input)
+            user_payload = coach_users.get(key)
+            if user_payload and password_input == user_payload.get("password"):
+                st.session_state["coach_auth"] = {
+                    "username": user_payload.get("username") or username_input.strip(),
+                    "coach_name": user_payload.get("coach_name") or user_payload.get("username") or username_input.strip(),
+                    "groups": user_payload.get("groups", []),
+                }
+                login_box.success("Giriş başarılı. Koç paneli açılıyor...")
+                st.experimental_rerun()
+            else:
+                login_box.error("Geçersiz kullanıcı adı veya şifre.")
+
+
 UYELIK_AY = {0:0, 1:1, 2:3, 3:6, 4:12}
 UYELIK_LABELS = {
     0: "",
@@ -460,15 +642,22 @@ def build_expiry_df(df: pd.DataFrame) -> pd.DataFrame:
 
 exp_df = build_expiry_df(ogr)
 
-menu_secimleri = [
-    "Genel Bakış Panosu",
-    "Üye Yönetimi",
-    "Tüm Üyelikler",
-    "İstatistikler",    
-    "Dışa Aktarım",
-]
+if coach_logged_in:
+    menu_secimleri = [COACH_PANEL_MENU]
+else:
+    menu_secimleri = [
+        "Genel Bakış Panosu",
+        "Üye Yönetimi",
+        "Tüm Üyelikler",
+        "İstatistikler",
+        "Dışa Aktarım",
+    ]
 
-secim = st.sidebar.radio("Menü", menu_secimleri, index=0)
+menu_key = "sidebar_menu_choice"
+if menu_key in st.session_state and st.session_state[menu_key] not in menu_secimleri:
+    st.session_state[menu_key] = menu_secimleri[0]
+
+secim = st.sidebar.radio("Menü", menu_secimleri, index=0, key=menu_key)
 
 toplam_ogrenci = len(ogr)
 
@@ -496,6 +685,50 @@ yenileme_maske = kalan_gun_serisi.between(-5, 5, inclusive="both") if not kalan_
 yenileme_penceresi = int(yenileme_maske.sum()) if not exp_df.empty else 0
 
 yenileme_df = exp_df[yenileme_maske] if not exp_df.empty else exp_df
+
+if secim == COACH_PANEL_MENU:
+    st.header("Koç Yoklama Paneli")
+    if not coach_logged_in:
+        st.warning("Koç paneline erişmek için giriş yapmalısınız.")
+    else:
+        panel_coach_name = coach_auth.get("coach_name") or coach_auth.get("username") or "Koç"
+        st.subheader(f"{panel_coach_name} için yoklama görünümü")
+
+        varsayilan_tarih = st.session_state.get("coach_panel_date") or dt.date.today()
+        secilen_tarih = st.date_input(
+            "Tarih", value=varsayilan_tarih, key="coach_panel_date", help="Görmek istediğiniz yoklama tarihini seçin."
+        )
+
+        coach_attendance_df = build_coach_attendance_view(panel_coach_name, ogr, yok, secilen_tarih)
+
+        if coach_attendance_df.empty:
+            st.info("Seçilen tarihte bu koça bağlı öğrenci veya yoklama kaydı bulunamadı.")
+        else:
+            gruplar = sorted({str(g).strip() for g in coach_attendance_df["Grup"] if pd.notna(g) and str(g).strip()})
+            grup_secimleri = ["Tüm Gruplar"] + gruplar
+            secilen_grup = st.selectbox("Grup filtresi", grup_secimleri, index=0)
+
+            goruntulenecek = coach_attendance_df.copy()
+            if secilen_grup != "Tüm Gruplar":
+                goruntulenecek = goruntulenecek[goruntulenecek["Grup"].astype(str).str.strip() == secilen_grup]
+
+            katildi_say = int((goruntulenecek["_katildi_bool"] == True).sum())  # noqa: E712
+            katilmadi_say = int((goruntulenecek["_katildi_bool"] == False).sum())  # noqa: E712
+            kaydi_yok = len(goruntulenecek) - katildi_say - katilmadi_say
+
+            m1, m2, m3 = st.columns(3)
+            m1.metric("Öğrenci Sayısı", len(goruntulenecek))
+            m2.metric("Katıldı", katildi_say)
+            m3.metric("Katılmadı", katilmadi_say)
+
+            if kaydi_yok:
+                st.caption(f"Kaydı olmayan öğrenci sayısı: {kaydi_yok}")
+
+            tablo = goruntulenecek.drop(columns="_katildi_bool")
+            tablo = tablo.sort_values(["Grup", "Ad Soyad"], kind="stable")
+            st.dataframe(tablo, use_container_width=True, hide_index=True)
+
+    st.stop()
 
 if secim == "Genel Bakış Panosu":
     st.header("Genel Bakış Panosu")
