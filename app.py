@@ -34,9 +34,26 @@ def norm_key(s: str) -> str:
     s = " ".join(s.split())
     return s
 
+def resolve_membership_status(value) -> str:
+    if pd.isna(value):
+        return "Pasif"
+    if isinstance(value, str):
+        nk = norm_key(value)
+        if "dondur" in nk:
+            return "Dondurmuş"
+        if any(word in nk for word in ["pasif", "inaktif", "iptal", "ayril"]):
+            return "Pasif"
+        if any(word in nk for word in ["aktif", "true", "evet", "var"]):
+            return "Aktif"
+    elif isinstance(value, bool):
+        return "Aktif" if value else "Pasif"
+    elif isinstance(value, (int, float)) and not pd.isna(value):
+        return "Aktif" if value != 0 else "Pasif"
+    return "Aktif" if bool(value) else "Pasif"
+
 BASE_COLS = [
     "ID","AdSoyad","DogumTarihi","VeliAdSoyad","Telefon",
-    "Grup","Seviye","Koc","Baslangic","UcretAylik","SonOdeme","Aktif",
+    "Grup","Seviye","Koc","Baslangic","UcretAylik","SonOdeme","Aktif","AktifDurumu",
     "UyelikTercihi","UyelikGunTercihi","UyelikYenilemeTercihi"
 ]
 
@@ -116,9 +133,13 @@ def normalize_students_df(df: pd.DataFrame) -> pd.DataFrame:
     df2["UcretAylik"] = pd.to_numeric(df2.get("UcretAylik", 0), errors="coerce").fillna(0)
     df2["Telefon"] = df2.get("Telefon","").astype(str)
 
-    df2["Aktif"] = df2.get("Aktif", True)
-    if not pd.api.types.is_bool_dtype(df2["Aktif"]):
-        df2["Aktif"] = df2["Aktif"].fillna(True).astype(bool)
+    if "Aktif" in df2.columns:
+        raw_status = df2["Aktif"]
+    else:
+        raw_status = pd.Series([True] * len(df2))
+    durumlar = [resolve_membership_status(v) for v in raw_status]
+    df2["AktifDurumu"] = durumlar
+    df2["Aktif"] = [d == "Aktif" for d in durumlar]
 
     df2["UyelikTercihi"] = pd.to_numeric(df2.get("UyelikTercihi", 0), errors="coerce").fillna(0).astype(int)
     df2["UyelikTercihi"] = df2["UyelikTercihi"].clip(lower=0, upper=12)  # esneklik, sonra 0-4'e kırparız
@@ -174,7 +195,7 @@ if uploaded:
 else:
     ogr = pd.DataFrame([
         {"ID":1,"AdSoyad":"Demo Öğrenci","Telefon":"0533","Grup":"U10","Seviye":"Başlangıç","Koc":"Ahmet",
-         "Baslangic":dt.date(2025,9,1),"UcretAylik":1500,"SonOdeme":dt.date(2025,10,1),"Aktif":True,"UyelikTercihi":1}
+         "Baslangic":dt.date(2025,9,1),"UcretAylik":1500,"SonOdeme":dt.date(2025,10,1),"Aktif":True,"AktifDurumu":"Aktif","UyelikTercihi":1}
     ])
     yok = pd.DataFrame(columns=["Tarih","Grup","OgrenciID","AdSoyad","Koc","Katildi","Not"])
     tah = pd.DataFrame(columns=["Tarih","OgrenciID","AdSoyad","Koc","Tutar","Aciklama"])
@@ -184,6 +205,13 @@ else:
 # ==========================
 
 UYELIK_AY = {0:0, 1:1, 2:3, 3:6, 4:12}
+UYELIK_LABELS = {
+    0: "Kontenjan",
+    1: "1 Aylık",
+    2: "3 Aylık",
+    3: "6 Aylık",
+    4: "12 Aylık",
+}
 
 def add_months(d: date, months: int) -> Optional[date]:
     if pd.isna(d) or d is None or months is None:
@@ -203,6 +231,13 @@ def build_expiry_df(df: pd.DataFrame) -> pd.DataFrame:
     tmp["Baslangic"] = pd.to_datetime(tmp.get("Baslangic"), errors="coerce").dt.date
     tmp["UyelikTercihi"] = pd.to_numeric(tmp.get("UyelikTercihi", 0), errors="coerce").fillna(0).astype(int)
     tmp["UyelikTercihi"] = tmp["UyelikTercihi"].clip(lower=0, upper=4)
+    
+    if "AktifDurumu" in tmp.columns:
+        tmp["UyelikDurumu"] = tmp["AktifDurumu"].fillna("Pasif")
+    elif "Aktif" in tmp.columns:
+        tmp["UyelikDurumu"] = tmp["Aktif"].apply(resolve_membership_status)
+    else:
+        tmp["UyelikDurumu"] = "Aktif"
 
     expires, remain, sure_ay = [], [], []
     for _, r in tmp.iterrows():
@@ -217,8 +252,12 @@ def build_expiry_df(df: pd.DataFrame) -> pd.DataFrame:
     tmp["UyelikSuresiAy"] = sure_ay
     tmp["UyelikBitisTarihi"] = expires
     tmp["KalanGun"] = remain
+    tmp["UyelikTercihiAd"] = tmp["UyelikTercihi"].map(UYELIK_LABELS).fillna("Belirtilmedi")    
 
-    cols = ["ID","AdSoyad","Koc","Grup","Baslangic","UyelikTercihi","UyelikSuresiAy","UyelikBitisTarihi","KalanGun","Telefon"]
+    cols = [
+        "ID","AdSoyad","Koc","Grup","UyelikDurumu","UyelikTercihi","UyelikTercihiAd",
+        "Baslangic","UyelikSuresiAy","UyelikBitisTarihi","KalanGun","Telefon"
+    ]
     for c in cols:
         if c not in tmp.columns:
             tmp[c] = None
@@ -260,7 +299,55 @@ if secim == "Genel Bakış Panosu":
 
 elif secim == "Tüm Üyelikler":
     st.header("Tüm Üyelikler")
-    st.dataframe(exp_df, use_container_width=True, hide_index=True)
+    if exp_df.empty:
+        st.info("Gösterilecek üyelik bulunamadı.")
+    else:
+        durum_options = ["Aktif", "Pasif", "Dondurmuş"]
+        grup_degerleri = [g for g in exp_df.get("Grup", pd.Series(dtype=object)).dropna() if str(g).strip()]
+        group_options = sorted(set(grup_degerleri), key=lambda g: str(g))
+        preference_options = [UYELIK_LABELS[k] for k in sorted(UYELIK_LABELS.keys())]
+        extra_preferences = sorted({p for p in exp_df.get("UyelikTercihiAd", pd.Series(dtype=object)).dropna() if p not in preference_options}, key=lambda p: str(p))
+        preference_options.extend(extra_preferences)
+
+        filt_col1, filt_col2, filt_col3 = st.columns(3)
+        secilen_durumlar = filt_col1.multiselect("Üyelik durumu", durum_options, default=durum_options)
+        secilen_gruplar = filt_col2.multiselect("Grup", group_options, default=group_options)
+        secilen_tercihler = filt_col3.multiselect("Üyelik tercihi", preference_options, default=preference_options)
+
+        filtreli_df = exp_df.copy()
+        if secilen_durumlar:
+            filtreli_df = filtreli_df[filtreli_df["UyelikDurumu"].isin(secilen_durumlar)]
+        if secilen_gruplar:
+            filtreli_df = filtreli_df[filtreli_df["Grup"].isin(secilen_gruplar)]
+        if secilen_tercihler:
+            filtreli_df = filtreli_df[filtreli_df["UyelikTercihiAd"].isin(secilen_tercihler)]
+
+        st.subheader("Üyelik listesi")
+        if filtreli_df.empty:
+            st.warning("Seçtiğiniz filtrelere uygun üyelik bulunamadı.")
+        else:
+            st.dataframe(filtreli_df, use_container_width=True, hide_index=True)
+
+        if not filtreli_df.empty and "KalanGun" in filtreli_df.columns:
+            kalan_gun_serisi = pd.to_numeric(filtreli_df["KalanGun"], errors="coerce")
+        else:
+            kalan_gun_serisi = pd.Series(dtype="float64", index=filtreli_df.index)
+        expiring_mask = kalan_gun_serisi.between(0, 5, inclusive="both") if not kalan_gun_serisi.empty else pd.Series([], dtype=bool)
+        expired_mask = kalan_gun_serisi.between(-5, -1, inclusive="both") if not kalan_gun_serisi.empty else pd.Series([], dtype=bool)
+
+        tab1, tab2 = st.tabs(["5 Gün İçinde Bitecek", "5 Gündür Geciken"])
+        with tab1:
+            st.subheader("Üyeliği bitmeye 5 gün kalanlar")
+            if not filtreli_df.empty and expiring_mask.any():
+                st.dataframe(filtreli_df[expiring_mask], use_container_width=True, hide_index=True)
+            else:
+                st.info("Seçili filtrelerde 5 gün içinde bitecek üyelik bulunamadı.")
+        with tab2:
+            st.subheader("Üyeliği bitişinin üzerinden 5 gün geçenler")
+            if not filtreli_df.empty and expired_mask.any():
+                st.dataframe(filtreli_df[expired_mask], use_container_width=True, hide_index=True)
+            else:
+                st.info("Seçili filtrelerde son 5 gün içinde süresi dolmuş üyelik bulunamadı.")
 
 elif secim == "Öğrenci Listesi":
     st.header("Öğrenci Listesi")
