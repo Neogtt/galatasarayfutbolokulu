@@ -1,92 +1,156 @@
+"""
+FUTBOL OKULU — Streamlit (Py3.8+) — OTOMATIK BAŞLIK TESPİTİ
+-----------------------------------------------------------
+• Sayfanın adı ne olursa olsun çalışır (örn. 'students').
+• Başlık satırı ilk satır değilse otomatik tespit eder (ilk 30 satırı tarar).
+• Türkçe karakter/boşluk normalize + geniş alias + header tespiti → Öğrenci Listesi dolar.
+• Üyelik kodları: 0=Kontenjan, 1=1 Aylık, 2=3 Aylık, 3=6 Aylık, 4=12 Aylık.
+"""
+
 import io
 from datetime import date
 import datetime as dt
-from typing import Tuple, Optional
+from typing import Tuple, Optional, List
 
 import pandas as pd
 import streamlit as st
 
 
 # ==========================
-# Yükleme / Kaydetme
+# Normalizasyon
+# ==========================
+
+TR_MAP = str.maketrans({
+    "Ç":"c","ç":"c","Ğ":"g","ğ":"g","İ":"i","I":"i","ı":"i","Ö":"o","ö":"o","Ş":"s","ş":"s","Ü":"u","ü":"u"
+})
+
+def norm_key(s: str) -> str:
+    if s is None:
+        return ""
+    s = str(s).strip().translate(TR_MAP).lower()
+    for ch in ["-", ".", "/", "\\", "|"]:
+        s = s.replace(ch, " ")
+    s = s.replace("_", " ")
+    s = " ".join(s.split())
+    return s
+
+BASE_COLS = [
+    "ID","AdSoyad","DogumTarihi","VeliAdSoyad","Telefon",
+    "Grup","Seviye","Koc","Baslangic","UcretAylik","SonOdeme","Aktif",
+    "UyelikTercihi","UyelikGunTercihi","UyelikYenilemeTercihi"
+]
+
+ALIAS_MAP = {
+    "id": "ID",
+    "adi soyadi": "AdSoyad", "ad soyad": "AdSoyad", "adi": "AdSoyad",
+    "dogumt": "DogumTarihi", "dogum t": "DogumTarihi", "dogum tarihi": "DogumTarihi", "dogumtarihi": "DogumTarihi",
+    "veliadsoyad": "VeliAdSoyad", "veli ad soyad": "VeliAdSoyad", "veliad": "VeliAdSoyad", "veliadsoy": "VeliAdSoyad",
+    "telefon": "Telefon", "tel": "Telefon",
+    "grup": "Grup",
+    "seviye": "Seviye",
+    "koc": "Koc", "koç": "Koc",
+    "kayit tarihi": "Baslangic", "kayittarihi": "Baslangic", "kayıt tarihi": "Baslangic", "kayıttarihi": "Baslangic",
+    "ucret aylik": "UcretAylik", "ucretaylik": "UcretAylik",
+    "son odeme": "SonOdeme", "sonodeme": "SonOdeme",
+    "aktif": "Aktif",
+    "uyeliktercihi": "UyelikTercihi", "uyelik tercihi": "UyelikTercihi",
+    "uyelikyenilemetarihi": "SonOdeme", "uyelik yenileme tarihi": "SonOdeme",
+    "uyelikguntercihi": "UyelikGunTercihi", "uyelik gun tercihi": "UyelikGunTercihi",
+    "uyelikyenilemetercihi": "UyelikYenilemeTercihi", "uyelik yenileme tercihi": "UyelikYenilemeTercihi",
+}
+
+HEADER_HINTS = {"adi","soyadi","telefon","grup","koc","kayit","uyelik","seviye"}
+
+
+def detect_header_row(df: pd.DataFrame, scan_rows: int = 30) -> int:
+    """İlk scan_rows satırı tarar; en çok header ipucu içeren satırı başlık kabul eder.
+    Dönen değer: header satır index'i. Bulamazsa 0 döner.
+    """
+    best_row, best_score = 0, -1
+    max_r = min(scan_rows, len(df))
+    for r in range(max_r):
+        row_vals = [norm_key(v) for v in df.iloc[r].tolist()]
+        score = 0
+        for v in row_vals:
+            for hint in HEADER_HINTS:
+                if hint in v:
+                    score += 1
+        if score > best_score:
+            best_score, best_row = score, r
+    return best_row
+
+
+def apply_aliases(cols: List[str]) -> List[str]:
+    renamed = []
+    for c in cols:
+        nk = norm_key(c)
+        renamed.append(ALIAS_MAP.get(nk, c))
+    return renamed
+
+
+def normalize_students_df(df: pd.DataFrame) -> pd.DataFrame:
+    # 1) Başlığı tespit et
+    hdr = detect_header_row(df)
+    header_vals = df.iloc[hdr].tolist()
+    # 2) Yeni başlıkları uygula ve üst satırları at
+    df2 = df.iloc[hdr+1:].reset_index(drop=True).copy()
+    df2.columns = header_vals
+    # 3) Alias uygula
+    df2 = df2.rename(columns={c: ALIAS_MAP.get(norm_key(c), c) for c in df2.columns})
+    # 4) Eksik kolonları tamamla
+    for c in BASE_COLS:
+        if c not in df2.columns:
+            df2[c] = None
+    # Türler
+    if "ID" in df2.columns:
+        df2["ID"] = pd.to_numeric(df2["ID"], errors="coerce")
+        if df2["ID"].isna().all():
+            df2["ID"] = range(1, len(df2) + 1)
+    else:
+        df2["ID"] = range(1, len(df2) + 1)
+    df2["ID"] = df2["ID"].fillna(0).astype(int)
+
+    for c in ("DogumTarihi","Baslangic","SonOdeme"):
+        df2[c] = pd.to_datetime(df2.get(c), errors="coerce").dt.date
+
+    df2["UcretAylik"] = pd.to_numeric(df2.get("UcretAylik", 0), errors="coerce").fillna(0)
+    df2["Telefon"] = df2.get("Telefon","").astype(str)
+
+    df2["Aktif"] = df2.get("Aktif", True)
+    if not pd.api.types.is_bool_dtype(df2["Aktif"]):
+        df2["Aktif"] = df2["Aktif"].fillna(True).astype(bool)
+
+    df2["UyelikTercihi"] = pd.to_numeric(df2.get("UyelikTercihi", 0), errors="coerce").fillna(0).astype(int)
+    df2["UyelikTercihi"] = df2["UyelikTercihi"].clip(lower=0, upper=12)  # esneklik, sonra 0-4'e kırparız
+
+    return df2[BASE_COLS]
+
+
+# ==========================
+# Excel Yükleme (header tespitli)
 # ==========================
 
 @st.cache_data(show_spinner=False)
-def load_excel(excel_bytes: bytes) -> Tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame]:
-    """Excel içeriğini DataFrame'lere yükler.
-    Sütun adları alias ile normalleştirilir; yok sayfa eksikse boş döner.
-    """
+def load_excel(excel_bytes: bytes) -> Tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame, str]:
     xls = pd.ExcelFile(io.BytesIO(excel_bytes))
     sheets = xls.sheet_names
-
-    def read_sheet(name, cols=None):
-        if name in sheets:
-            df = xls.parse(name)
-        else:
-            df = pd.DataFrame(columns=cols or [])
-        return df
-
-    # Kullanıcı başlıkları → dahili alanlar
-    ALIASES = {
-        "ADI SOYADI": "AdSoyad",
-        "Adı Soyadı": "AdSoyad",
-        "KayıtTarihi": "Baslangic",
-        "Uyeliktercihi": "UyelikTercihi",
-        "UyelikYenilemeTarihi": "SonOdeme",
-        "UyelikgunTercihi": "UyelikGunTercihi",
-        "UyelikYenilemetercihi": "UyelikYenilemeTercihi",
-    }
-
-    def normalize_students_df(df: pd.DataFrame) -> pd.DataFrame:
-        # Alias uygula
-        ren = {c: ALIASES.get(str(c), c) for c in df.columns}
-        df = df.rename(columns=ren)
-
-        # Beklenen kolonlar
-        base_cols = [
-            "ID","AdSoyad","DogumTarihi","VeliAdSoyad","Telefon",
-            "Grup","Seviye","Koc","Baslangic","UcretAylik","SonOdeme","Aktif",
-            "UyelikTercihi","UyelikGunTercihi","UyelikYenilemeTercihi"
-        ]
-        for c in base_cols:
-            if c not in df.columns:
-                df[c] = None
-
-        # Tür düzeltmeleri
-        df["ID"] = pd.to_numeric(df.get("ID", range(1,len(df)+1)), errors="coerce").fillna(0).astype(int)
-        for c in ("DogumTarihi","Baslangic","SonOdeme"):
-            if c in df.columns:
-                df[c] = pd.to_datetime(df[c], errors="coerce").dt.date
-        df["UcretAylik"] = pd.to_numeric(df.get("UcretAylik", 0), errors="coerce").fillna(0)
-        df["Telefon"] = df.get("Telefon","").astype(str)
-        df["Aktif"] = df.get("Aktif", True).fillna(True).astype(bool)
-        # Üyelik kodlarını (0-4) int olarak tut
-        df["UyelikTercihi"] = pd.to_numeric(df.get("UyelikTercihi", 0), errors="coerce").fillna(0).astype(int)
-
-        return df[base_cols]
-
-    # Öğrenciler sayfası: "Ogrenciler" varsa onu, yoksa ilk sayfayı kullan
-    if "Ogrenciler" in sheets:
-        ogr_raw = xls.parse("Ogrenciler")
-    else:
-        ogr_raw = xls.parse(sheets[0]) if sheets else pd.DataFrame()
-
-    ogr = normalize_students_df(ogr_raw)
-
-    # Yoklama ve Tahsilat (opsiyonel)
-    yok = read_sheet("Yoklama", ["Tarih","Grup","OgrenciID","AdSoyad","Koc","Katildi","Not"])
-    tah = read_sheet("Tahsilat", ["Tarih","OgrenciID","AdSoyad","Koc","Tutar","Aciklama"])
-
-    # Tip düzeltmeleri
+    # 'Ogrenciler' tercih et, yoksa ilk sayfa
+    sheet = "Ogrenciler" if "Ogrenciler" in sheets else (sheets[0] if sheets else None)
+    if sheet is None:
+        return pd.DataFrame(), pd.DataFrame(), pd.DataFrame(), ""
+    # Başlıksız (header=None) okuyup tespit yapacağız
+    raw = xls.parse(sheet, header=None)
+    ogr = normalize_students_df(raw)
+    # Opsiyonel sayfalar
+    yok = xls.parse("Yoklama") if "Yoklama" in sheets else pd.DataFrame(columns=["Tarih","Grup","OgrenciID","AdSoyad","Koc","Katildi","Not"])
+    tah = xls.parse("Tahsilat") if "Tahsilat" in sheets else pd.DataFrame(columns=["Tarih","OgrenciID","AdSoyad","Koc","Tutar","Aciklama"])
     for df_, dcol in [(yok,"Tarih"), (tah,"Tarih")]:
         if not df_.empty and dcol in df_.columns:
             df_[dcol] = pd.to_datetime(df_[dcol], errors="coerce").dt.date
-
-    return ogr, yok, tah
+    return ogr, yok, tah, sheet
 
 
 def write_excel(ogr: pd.DataFrame, yok: pd.DataFrame, tah: pd.DataFrame) -> bytes:
-    """DataFrame'leri tek bir Excel bytes objesine yazar ve döndürür."""
     buff = io.BytesIO()
     with pd.ExcelWriter(buff, engine="openpyxl") as w:
         ogr.to_excel(w, index=False, sheet_name="Ogrenciler")
@@ -97,51 +161,37 @@ def write_excel(ogr: pd.DataFrame, yok: pd.DataFrame, tah: pd.DataFrame) -> byte
 
 
 # ==========================
-# Uygulama Ayarları
+# Uygulama
 # ==========================
 
 st.set_page_config(page_title="Futbol Okulu", page_icon="⚽", layout="wide")
-st.sidebar.title("⚽ Futbol Okulu")
-st.sidebar.caption("Excel tabanlı MVP — Üyelik takip + Genel Bakış")
+st.sidebar.title("⚽ Futbol Okulu — Otomatik Başlık")
 
 uploaded = st.sidebar.file_uploader("Excel yükle (.xlsx)", type=["xlsx"])
 if uploaded:
-    ogr, yok, tah = load_excel(uploaded.getvalue())
+    ogr, yok, tah, used_sheet = load_excel(uploaded.getvalue())
+    st.sidebar.success(f"Yüklenen sayfa: {used_sheet}")
 else:
-    # Demo veri
     ogr = pd.DataFrame([
-        {"ID":1,"AdSoyad":"Ali Yılmaz","VeliAdSoyad":"Mehmet Yılmaz","Telefon":"05330000000",
-         "Grup":"U10","Seviye":"Başlangıç","Koc":"Ahmet","Baslangic":dt.date(2025,9,1),
-         "UcretAylik":1500,"SonOdeme":dt.date(2025,10,1),"Aktif":True,"UyelikTercihi":1,
-         "UyelikGunTercihi":"1-7","UyelikYenilemeTercihi":"Otomatik"},
-        {"ID":2,"AdSoyad":"Efe Demir","VeliAdSoyad":"Aylin Demir","Telefon":"05331111111",
-         "Grup":"U10","Seviye":"Orta","Koc":"Ahmet","Baslangic":dt.date(2025,8,15),
-         "UcretAylik":1500,"SonOdeme":dt.date(2025,9,1),"Aktif":True,"UyelikTercihi":2,
-         "UyelikGunTercihi":"8-15","UyelikYenilemeTercihi":"Manuel"},
-        {"ID":3,"AdSoyad":"Berk Kaya","VeliAdSoyad":"Kerem Kaya","Telefon":"05332222222",
-         "Grup":"U12","Seviye":"İleri","Koc":"Elif","Baslangic":dt.date(2025,7,1),
-         "UcretAylik":1750,"SonOdeme":dt.date(2025,10,1),"Aktif":True,"UyelikTercihi":4,
-         "UyelikGunTercihi":"16-31","UyelikYenilemeTercihi":"Manuel"},
+        {"ID":1,"AdSoyad":"Demo Öğrenci","Telefon":"0533","Grup":"U10","Seviye":"Başlangıç","Koc":"Ahmet",
+         "Baslangic":dt.date(2025,9,1),"UcretAylik":1500,"SonOdeme":dt.date(2025,10,1),"Aktif":True,"UyelikTercihi":1}
     ])
     yok = pd.DataFrame(columns=["Tarih","Grup","OgrenciID","AdSoyad","Koc","Katildi","Not"])
     tah = pd.DataFrame(columns=["Tarih","OgrenciID","AdSoyad","Koc","Tutar","Aciklama"])
 
-
 # ==========================
-# GENEL BAKIŞ PANELİ
+# Genel Bakış
 # ==========================
 
 st.header("Genel Bakış")
 
-# Üyelik kodu → ay sayısı
-UYELIK_AY = {0: 0, 1: 1, 2: 3, 3: 6, 4: 12}
+UYELIK_AY = {0:0, 1:1, 2:3, 3:6, 4:12}
 
 def add_months(d: date, months: int) -> Optional[date]:
     if pd.isna(d) or d is None or months is None:
         return None
     y = d.year + (d.month - 1 + months) // 12
     m = (d.month - 1 + months) % 12 + 1
-    # Ay sonu güvenliği
     mdays = [31, 29 if (y%4==0 and (y%100!=0 or y%400==0)) else 28, 31,30,31,30,31,31,30,31,30,31][m-1]
     day = min(d.day, mdays)
     return date(y, m, day)
@@ -149,9 +199,12 @@ def add_months(d: date, months: int) -> Optional[date]:
 _today = dt.date.today()
 
 def build_expiry_df(df: pd.DataFrame) -> pd.DataFrame:
+    if df.empty:
+        return df
     tmp = df.copy()
     tmp["Baslangic"] = pd.to_datetime(tmp.get("Baslangic"), errors="coerce").dt.date
     tmp["UyelikTercihi"] = pd.to_numeric(tmp.get("UyelikTercihi", 0), errors="coerce").fillna(0).astype(int)
+    tmp["UyelikTercihi"] = tmp["UyelikTercihi"].clip(lower=0, upper=4)
 
     expires, remain, sure_ay = [], [], []
     for _, r in tmp.iterrows():
@@ -168,17 +221,18 @@ def build_expiry_df(df: pd.DataFrame) -> pd.DataFrame:
     tmp["KalanGun"] = remain
 
     cols = ["ID","AdSoyad","Koc","Grup","Baslangic","UyelikTercihi","UyelikSuresiAy","UyelikBitisTarihi","KalanGun","Telefon"]
+    for c in cols:
+        if c not in tmp.columns:
+            tmp[c] = None
     return tmp[cols].sort_values(["KalanGun"], ascending=True, na_position="last")
 
 exp_df = build_expiry_df(ogr)
 
-# KPI'lar
-aktif_say = int(ogr.get("Aktif", pd.Series([True]*len(ogr))).sum()) if not ogr.empty else 0
-uyelikli = int((exp_df["UyelikSuresiAy"] > 0).sum()) if not exp_df.empty else 0
-bugun_icinde = int((exp_df["KalanGun"] == 0).sum()) if not exp_df.empty else 0
-hafta_icinde = int(((exp_df["KalanGun"] >= 0) & (exp_df["KalanGun"] <= 5)).sum()) if not exp_df.empty else 0
-
 c1, c2, c3, c4 = st.columns(4)
+aktif_say = int(ogr.get("Aktif", pd.Series([True]*len(ogr))).sum()) if not ogr.empty else 0
+uyelikli = int((exp_df.get("UyelikSuresiAy", pd.Series([])) > 0).sum()) if not exp_df.empty else 0
+bugun_icinde = int((exp_df.get("KalanGun", pd.Series([])) == 0).sum()) if not exp_df.empty else 0
+hafta_icinde = int(((exp_df.get("KalanGun", pd.Series([])) >= 0) & (exp_df.get("KalanGun", pd.Series([])) <= 5)).sum()) if not exp_df.empty else 0
 c1.metric("Aktif Öğrenci", aktif_say)
 c2.metric("Üyelikli Öğrenci", uyelikli)
 c3.metric("Bugün Biten", bugun_icinde)
@@ -195,52 +249,6 @@ st.dataframe(exp_df, use_container_width=True, hide_index=True)
 
 st.divider()
 
-
-# ==========================
-# ÖĞRENCİ EKLE
-# ==========================
-
-st.header("Öğrenci Ekle")
-
-uyelik_map = {
-    "Kontenjan (0)": 0,
-    "1 Aylık (1)": 1,
-    "3 Aylık (2)": 2,
-    "6 Aylık (3)": 3,
-    "12 Aylık (4)": 4,
-}
-
-col1, col2, col3 = st.columns(3)
-ad = col1.text_input("Ad Soyad")
-veli = col2.text_input("Veli Adı")
-tel = col3.text_input("Telefon")
-
-col4, col5, col6 = st.columns(3)
-gr = col4.text_input("Grup", "U10")
-sev = col5.selectbox("Seviye", ["Başlangıç","Orta","İleri"])
-koc = col6.text_input("Koç")
-
-col7, col8, col9 = st.columns(3)
-kayit = col7.date_input("Kayıt Tarihi", dt.date.today())
-ucret = col8.number_input("Aylık Ücret (TL)", 0, 100000, 1500, 50)
-aktif = col9.toggle("Aktif", True)
-
-col10, col11, col12 = st.columns(3)
-uyelik = col10.selectbox("Üyelik Tercihi", list(uyelik_map.keys()))
-uyelik_gun = col11.text_input("Üyelik Gün Tercihi", "1-7")
-uyelik_yen = col12.text_input("Üyelik Yenileme Tercihi", "Otomatik")
-
-if st.button("➕ Ekle") and ad:
-    new_id = (ogr["ID"].max() + 1) if not ogr.empty else 1
-    new_row = {
-        "ID": new_id, "AdSoyad": ad, "VeliAdSoyad": veli, "Telefon": tel,
-        "Grup": gr, "Seviye": sev, "Koc": koc,
-        "Baslangic": kayit, "UcretAylik": ucret, "SonOdeme": dt.date.today(), "Aktif": aktif,
-        "UyelikTercihi": uyelik_map[uyelik], "UyelikGunTercihi": uyelik_gun, "UyelikYenilemeTercihi": uyelik_yen,
-    }
-    ogr = pd.concat([ogr, pd.DataFrame([new_row])], ignore_index=True)
-    st.success(f"{ad} eklendi — Üyelik kodu: {uyelik_map[uyelik]}")
-
 st.subheader("Öğrenci Listesi")
 st.dataframe(ogr, use_container_width=True, hide_index=True)
 
@@ -248,13 +256,18 @@ st.dataframe(ogr, use_container_width=True, hide_index=True)
 # Dışa Aktar
 # ==========================
 
-def write_requirements() -> str:
-    return "streamlit>=1.34\npandas>=2.0\nopenpyxl>=3.1\n"
+def write_excel(ogr, yok, tah):
+    buff = io.BytesIO()
+    with pd.ExcelWriter(buff, engine="openpyxl") as w:
+        ogr.to_excel(w, index=False, sheet_name="Ogrenciler")
+        yok.to_excel(w, index=False, sheet_name="Yoklama")
+        tah.to_excel(w, index=False, sheet_name="Tahsilat")
+    buff.seek(0)
+    return buff.read()
 
 excel_bytes = write_excel(ogr, yok, tah)
 st.download_button("Excel'i indir", data=excel_bytes,
                    file_name=f"futbol_okulu_{dt.date.today().isoformat()}.xlsx",
                    mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
 
-st.caption("Py3.8+ uyumlu sürüm — Genel Bakış + Üyelik kodları (0-4).")
-
+st.caption("Otomatik başlık tespiti aktif. Sheet adı: fark etmez (örn. 'students').")
