@@ -37,7 +37,15 @@ def norm_key(s: str) -> str:
 def resolve_membership_status(value) -> str:
     if pd.isna(value):
         return "Pasif"
-    if isinstance(value, str):
+
+    numeric_value: Optional[int] = None
+
+    if isinstance(value, bool):
+        return "Aktif" if value else "Pasif"
+
+    if isinstance(value, (int, float)) and not pd.isna(value):
+        numeric_value = int(value)
+    elif isinstance(value, str):
         nk = norm_key(value)
         if "dondur" in nk:
             return "Dondurmuş"
@@ -45,10 +53,16 @@ def resolve_membership_status(value) -> str:
             return "Pasif"
         if any(word in nk for word in ["aktif", "true", "evet", "var"]):
             return "Aktif"
-    elif isinstance(value, bool):
-        return "Aktif" if value else "Pasif"
-    elif isinstance(value, (int, float)) and not pd.isna(value):
-        return "Aktif" if value != 0 else "Pasif"
+        try:
+            numeric_value = int(float(nk.replace(",", ".")))
+        except ValueError:
+            numeric_value = None
+
+    if numeric_value is not None:
+        if numeric_value == 3:
+            return "Dondurmuş"
+        return "Aktif" if numeric_value != 0 else "Pasif"
+
     return "Aktif" if bool(value) else "Pasif"
 
 BASE_COLS = [
