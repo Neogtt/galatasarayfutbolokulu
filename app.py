@@ -1,16 +1,7 @@
-"""
-FUTBOL OKULU — Streamlit Uygulaması (Üyelik Kodlu v2 + Genel Bakış)
--------------------------------------------------------------------
-• Excel tabanlı öğrenci yönetimi (esnek sütun haritası + üyelik kodları).
-• Üyelik seçenekleri: 0=Kontenjan, 1=1 Aylık, 2=3 Aylık, 3=6 Aylık, 4=12 Aylık.
-• Programda açılır menü olarak gösterilir, Excel'e sayısal değer (0-4) yazılır.
-• Genel Bakış panelinde üyelik bitiş tarihi ve ≤5 gün kalanlar ayrı listelenir.
-"""
-
 import io
 from datetime import date
 import datetime as dt
-from typing import Tuple
+from typing import Tuple, Optional
 
 import pandas as pd
 import streamlit as st
@@ -145,7 +136,7 @@ st.header("Genel Bakış")
 # Üyelik kodu → ay sayısı
 UYELIK_AY = {0: 0, 1: 1, 2: 3, 3: 6, 4: 12}
 
-def add_months(d: date, months: int) -> date | None:
+def add_months(d: date, months: int) -> Optional[date]:
     if pd.isna(d) or d is None or months is None:
         return None
     y = d.year + (d.month - 1 + months) // 12
@@ -257,9 +248,13 @@ st.dataframe(ogr, use_container_width=True, hide_index=True)
 # Dışa Aktar
 # ==========================
 
+def write_requirements() -> str:
+    return "streamlit>=1.34\npandas>=2.0\nopenpyxl>=3.1\n"
+
 excel_bytes = write_excel(ogr, yok, tah)
 st.download_button("Excel'i indir", data=excel_bytes,
                    file_name=f"futbol_okulu_{dt.date.today().isoformat()}.xlsx",
                    mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
 
-st.caption("v2 — Genel Bakış + Üyelik kodları (0-4). WhatsApp entegrasyonu sonraki adımda eklenecek.")
+st.caption("Py3.8+ uyumlu sürüm — Genel Bakış + Üyelik kodları (0-4).")
+
