@@ -370,9 +370,8 @@ exp_df = build_expiry_df(ogr)
 
 menu_secimleri = [
     "Genel Bakış Panosu",
-    "Üye Yönetimi",    
+    "Üye Yönetimi",
     "Tüm Üyelikler",
-    "Öğrenci Listesi",
     "Dışa Aktarım",
 ]
 
@@ -712,10 +711,6 @@ elif secim == "Tüm Üyelikler":
                 st.dataframe(filtreli_df[expired_mask], use_container_width=True, hide_index=True)
             else:
                 st.info("Seçili filtrelerde son 5 gün içinde süresi dolmuş üyelik bulunamadı.")
-
-elif secim == "Öğrenci Listesi":
-    st.header("Öğrenci Listesi")
-    st.dataframe(ogr, use_container_width=True, hide_index=True)
 
 elif secim == "Dışa Aktarım":
     st.header("Dışa Aktarım")
