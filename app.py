@@ -237,6 +237,19 @@ def to_int(value, default: int = 0) -> int:
         return default
     return int(numeric)
 
+def format_display_value(value) -> str:
+    if isinstance(value, pd.Timestamp):
+        value = value.date()
+    if isinstance(value, date):
+        return value.isoformat()
+    if value is None:
+        return ""
+    if isinstance(value, float) and pd.isna(value):
+        return ""
+    if pd.isna(value):
+        return ""
+    return str(value)
+
 
 
 # ==========================
@@ -472,6 +485,11 @@ elif secim == "Üye Yönetimi":
             satir = ogr_df.loc[secilen_indeks]
             mevcut_uyelik = to_int(satir.get("UyelikTercihi"), default=0)
             mevcut_aktif_durum = satir.get("AktifDurumu") or ("Aktif" if bool(satir.get("Aktif", True)) else "Pasif")
+
+            st.markdown("**Seçilen Üyenin Mevcut Bilgileri**")
+            gorunum = {col: format_display_value(satir.get(col)) for col in BASE_COLS if col in satir}
+            if gorunum:
+                st.dataframe(pd.DataFrame([gorunum]), use_container_width=True, hide_index=True)            
 
             with st.form(f"duzenle_form_{secilen_indeks}"):
                 col1, col2, col3 = st.columns(3)
