@@ -14,6 +14,7 @@ from typing import Tuple, Optional, List
 
 import pandas as pd
 import streamlit as st
+import altair as alt
 
 
 # ==========================
@@ -276,6 +277,33 @@ def format_display_value(value) -> str:
 
 
 # ==========================
+# Yaş Hesaplama
+# ==========================
+
+def compute_age(birth_value, today: date) -> Optional[int]:
+    """Doğum tarihinden bugünkü yaşını hesapla."""
+    if birth_value is None:
+        return None
+    if isinstance(birth_value, float) and pd.isna(birth_value):
+        return None
+    if isinstance(birth_value, pd.Timestamp):
+        birth_date = birth_value.date()
+    elif isinstance(birth_value, date):
+        birth_date = birth_value
+    else:
+        birth_date = coerce_date_value(birth_value)
+    if birth_date is None:
+        return None
+    if birth_date > today:
+        return None
+    years = today.year - birth_date.year - (
+        (today.month, today.day) < (birth_date.month, birth_date.day)
+    )
+    return max(int(years), 0)
+
+
+
+# ==========================
 # Uygulama
 # ==========================
 
@@ -372,6 +400,7 @@ menu_secimleri = [
     "Genel Bakış Panosu",
     "Üye Yönetimi",
     "Tüm Üyelikler",
+    "İstatistikler",    
     "Dışa Aktarım",
 ]
 
@@ -711,6 +740,97 @@ elif secim == "Tüm Üyelikler":
                 st.dataframe(filtreli_df[expired_mask], use_container_width=True, hide_index=True)
             else:
                 st.info("Seçili filtrelerde son 5 gün içinde süresi dolmuş üyelik bulunamadı.")
+
+elif secim == "İstatistikler":
+    st.header("İstatistikler")
+    if ogr.empty:
+        st.info("Henüz öğrenci bulunmuyor. Önce veri yükleyin veya öğrenci ekleyin.")
+    else:
+        yas_serisi = ogr.get("DogumTarihi", pd.Series(dtype=object)).apply(
+            lambda v: compute_age(v, _today)
+        )
+        yas_serisi = pd.to_numeric(yas_serisi, errors="coerce")
+
+        yas_gruplari = pd.cut(
+            yas_serisi,
+            bins=[0, 7, 10, 13, 16, 19, 200],
+            labels=["0-6", "7-9", "10-12", "13-15", "16-18", "19+"],
+            right=False,
+        )
+        yas_df = (
+            yas_gruplari.value_counts(dropna=False)
+            .rename_axis("YasGrubu")
+            .reset_index(name="Sayi")
+        )
+        if not yas_df.empty:
+            yas_df["YasGrubu"] = (
+                yas_df["YasGrubu"].astype(str).replace({"nan": "Belirtilmedi"})
+            )
+            toplam = yas_df["Sayi"].sum()
+            if toplam > 0:
+                yas_df["Yuzde"] = (yas_df["Sayi"] / toplam * 100).round(1)
+
+        uyelik_serisi = pd.to_numeric(
+            ogr.get("UyelikTercihi", pd.Series(dtype=object)), errors="coerce"
+        )
+        uyelik_serisi = uyelik_serisi.fillna(0).clip(lower=0, upper=4).astype(int)
+        uyelik_etiketleri = (
+            uyelik_serisi.map(UYELIK_LABELS).replace({"": "Belirtilmedi"}).fillna("Belirtilmedi")
+        )
+        uyelik_df = (
+            uyelik_etiketleri.value_counts()
+            .rename_axis("UyelikTercihi")
+            .reset_index(name="Sayi")
+        )
+        if not uyelik_df.empty:
+            toplam_uyelik = uyelik_df["Sayi"].sum()
+            if toplam_uyelik > 0:
+                uyelik_df["Yuzde"] = (uyelik_df["Sayi"] / toplam_uyelik * 100).round(1)
+
+        kol1, kol2 = st.columns(2)
+
+        with kol1:
+            st.subheader("Yaş Grupları Dağılımı")
+            if yas_df.empty or yas_df["Sayi"].sum() == 0:
+                st.info("Yaş grubu hesaplamak için geçerli doğum tarihi bulunamadı.")
+            else:
+                yas_chart = (
+                    alt.Chart(yas_df)
+                    .mark_arc()
+                    .encode(
+                        theta=alt.Theta(field="Sayi", type="quantitative"),
+                        color=alt.Color(field="YasGrubu", type="nominal"),
+                        tooltip=[
+                            alt.Tooltip("YasGrubu:N", title="Yaş Grubu"),
+                            alt.Tooltip("Sayi:Q", title="Öğrenci"),
+                            alt.Tooltip("Yuzde:Q", title="Oran (%)"),
+                        ],
+                    )
+                )
+                st.altair_chart(yas_chart, use_container_width=True)
+                st.dataframe(yas_df, use_container_width=True, hide_index=True)
+
+        with kol2:
+            st.subheader("Üyelik Tercihi Dağılımı")
+            if uyelik_df.empty or uyelik_df["Sayi"].sum() == 0:
+                st.info("Üyelik tercihi verisi bulunamadı.")
+            else:
+                uyelik_chart = (
+                    alt.Chart(uyelik_df)
+                    .mark_arc()
+                    .encode(
+                        theta=alt.Theta(field="Sayi", type="quantitative"),
+                        color=alt.Color(field="UyelikTercihi", type="nominal"),
+                        tooltip=[
+                            alt.Tooltip("UyelikTercihi:N", title="Üyelik"),
+                            alt.Tooltip("Sayi:Q", title="Öğrenci"),
+                            alt.Tooltip("Yuzde:Q", title="Oran (%)"),
+                        ],
+                    )
+                )
+                st.altair_chart(uyelik_chart, use_container_width=True)
+                st.dataframe(uyelik_df, use_container_width=True, hide_index=True)
+
 
 elif secim == "Dışa Aktarım":
     st.header("Dışa Aktarım")
