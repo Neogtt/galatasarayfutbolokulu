@@ -429,7 +429,12 @@ elif secim == "Üye Yönetimi":
     if ogr.empty:
         st.info("Henüz öğrenci bulunmuyor. Yeni bir öğrenci ekleyebilirsiniz.")
 
-    tab_ekle, tab_duzenle, tab_sil = st.tabs(["Yeni Üye Ekle", "Üyeyi Düzenle", "Üye Sil"])
+    tab_ekle, tab_yenile, tab_duzenle, tab_sil = st.tabs([
+        "Yeni Üye Ekle",
+        "Kayıt Yenileme",
+        "Üyeyi Düzenle",
+        "Üye Sil",
+    ])
 
     with tab_ekle:
         ogr_df = st.session_state["ogr"]
@@ -566,6 +571,69 @@ elif secim == "Üye Yönetimi":
                     st.session_state["ogr"] = guncel_df.reset_index(drop=True)
                     st.success("Öğrenci bilgileri güncellendi.")
                     st.experimental_rerun()
+
+        with tab_yenile:
+        ogr_df = st.session_state["ogr"]
+        if ogr_df.empty:
+            st.info("Yenileme yapabilecek öğrenci bulunmuyor.")
+        else:
+            ogr_sec_options = list(ogr_df.index)
+
+            with st.form("kayit_yenile_form"):
+                secilen_indeks = st.selectbox(
+                    "Yenilenecek öğrenciyi seçin",
+                    options=ogr_sec_options,
+                    format_func=lambda idx: f"{ogr_df.loc[idx, 'ID']} - {ogr_df.loc[idx, 'AdSoyad']}",
+                )
+
+                satir = ogr_df.loc[secilen_indeks]
+                mevcut_baslangic = coerce_date_value(satir.get("Baslangic"))
+                mevcut_uyelik = to_int(satir.get("UyelikTercihi"), default=0)
+                varsayilan_tarih = add_months(mevcut_baslangic, UYELIK_AY.get(mevcut_uyelik, 0))
+                if varsayilan_tarih is None:
+                    varsayilan_tarih = dt.date.today()
+
+                yenileme_tarihi = st.date_input(
+                    "Yenileme Tarihi",
+                    value=varsayilan_tarih,
+                    help="Yenilenecek dönemin başlangıç tarihini seçin.",
+                )
+
+                uyelik_sec_options = list(UYELIK_LABELS.keys())
+                uyelik_index = uyelik_sec_options.index(mevcut_uyelik) if mevcut_uyelik in uyelik_sec_options else 0
+                secilen_uyelik = st.selectbox(
+                    "Üyelik Tercihi",
+                    options=uyelik_sec_options,
+                    index=uyelik_index,
+                    format_func=lambda k: UYELIK_LABELS.get(k, ""),
+                    help="Yeni üyelik süresini seçin.",
+                )
+
+                yenile_submit = st.form_submit_button("Kayıt Yenile")
+
+            if yenile_submit:
+                yenileme_ay = UYELIK_AY.get(int(secilen_uyelik), 0)
+                yeni_son_odeme = add_months(yenileme_tarihi, yenileme_ay) if yenileme_ay else None
+
+                guncel_df = ogr_df.copy()
+                guncel_df.loc[secilen_indeks, "Baslangic"] = yenileme_tarihi
+                guncel_df.loc[secilen_indeks, "UyelikTercihi"] = int(secilen_uyelik)
+                guncel_df.loc[secilen_indeks, "SonOdeme"] = yeni_son_odeme
+                guncel_df.loc[secilen_indeks, "UyelikYenilemeTercihi"] = yenileme_tarihi.isoformat()
+                guncel_df.loc[secilen_indeks, "AktifDurumu"] = "Aktif"
+                guncel_df.loc[secilen_indeks, "Aktif"] = True
+
+                st.session_state["ogr"] = guncel_df.reset_index(drop=True)
+
+                if yeni_son_odeme:
+                    st.success(
+                        f"{satir.get('AdSoyad')} için yenileme tamamlandı. Yeni son ödeme tarihi: {yeni_son_odeme.isoformat()}."
+                    )
+                else:
+                    st.success(f"{satir.get('AdSoyad')} için yenileme tamamlandı.")
+
+                st.experimental_rerun()
+
 
     with tab_sil:
         ogr_df = st.session_state["ogr"]
