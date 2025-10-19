@@ -225,7 +225,7 @@ else:
 
 UYELIK_AY = {0:0, 1:1, 2:3, 3:6, 4:12}
 UYELIK_LABELS = {
-    0: "Kontenjan",
+    0: "",
     1: "1 Aylık",
     2: "3 Aylık",
     3: "6 Aylık",
