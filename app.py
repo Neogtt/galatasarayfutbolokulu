@@ -545,40 +545,41 @@ if "coach_auth" not in st.session_state:
 coach_auth = st.session_state["coach_auth"]
 coach_logged_in = bool(coach_auth.get("username"))
 
-with st.sidebar.expander("Koç Girişi", expanded=not coach_logged_in) as login_box:
-    if not coach_users:
-        login_box.info(
-            "Koç giriş bilgileri tanımlanmadı. `secrets.toml` dosyasına `coach_users` "
-            "başlığı altında kullanıcı adı ve şifre ekleyin."
-        )
-    elif coach_logged_in:
-        coach_display = coach_auth.get("coach_name") or coach_auth.get("username")
-        login_box.success(f"Giriş yapan koç: {coach_display}")
-        assigned_groups = coach_auth.get("groups") or []
-        if assigned_groups:
-            login_box.caption("Gruplar: " + ", ".join(assigned_groups))
-        if login_box.button("Çıkış Yap"):
-            st.session_state["coach_auth"] = {"username": None, "coach_name": None, "groups": []}
-            st.session_state.pop("coach_panel_date", None)
+login_box = st.sidebar.expander("Koç Girişi", expanded=not coach_logged_in)
+
+if not coach_users:
+    login_box.info(
+        "Koç giriş bilgileri tanımlanmadı. `secrets.toml` dosyasına `coach_users` "
+        "başlığı altında kullanıcı adı ve şifre ekleyin."
+    )
+elif coach_logged_in:
+    coach_display = coach_auth.get("coach_name") or coach_auth.get("username")
+    login_box.success(f"Giriş yapan koç: {coach_display}")
+    assigned_groups = coach_auth.get("groups") or []
+    if assigned_groups:
+        login_box.caption("Gruplar: " + ", ".join(assigned_groups))
+    if login_box.button("Çıkış Yap"):
+        st.session_state["coach_auth"] = {"username": None, "coach_name": None, "groups": []}
+        st.session_state.pop("coach_panel_date", None)
+        st.experimental_rerun()
+else:
+    with login_box.form("coach_login_form"):
+        username_input = st.text_input("Kullanıcı Adı")
+        password_input = st.text_input("Şifre", type="password")
+        submit_login = st.form_submit_button("Giriş Yap")
+    if submit_login:
+        key = norm_key(username_input)
+        user_payload = coach_users.get(key)
+        if user_payload and password_input == user_payload.get("password"):
+            st.session_state["coach_auth"] = {
+                "username": user_payload.get("username") or username_input.strip(),
+                "coach_name": user_payload.get("coach_name") or user_payload.get("username") or username_input.strip(),
+                "groups": user_payload.get("groups", []),
+            }
+            login_box.success("Giriş başarılı. Koç paneli açılıyor...")
             st.experimental_rerun()
-    else:
-        with login_box.form("coach_login_form"):
-            username_input = st.text_input("Kullanıcı Adı")
-            password_input = st.text_input("Şifre", type="password")
-            submit_login = st.form_submit_button("Giriş Yap")
-        if submit_login:
-            key = norm_key(username_input)
-            user_payload = coach_users.get(key)
-            if user_payload and password_input == user_payload.get("password"):
-                st.session_state["coach_auth"] = {
-                    "username": user_payload.get("username") or username_input.strip(),
-                    "coach_name": user_payload.get("coach_name") or user_payload.get("username") or username_input.strip(),
-                    "groups": user_payload.get("groups", []),
-                }
-                login_box.success("Giriş başarılı. Koç paneli açılıyor...")
-                st.experimental_rerun()
-            else:
-                login_box.error("Geçersiz kullanıcı adı veya şifre.")
+        else:
+            login_box.error("Geçersiz kullanıcı adı veya şifre.")
 
 
 UYELIK_AY = {0:0, 1:1, 2:3, 3:6, 4:12}
