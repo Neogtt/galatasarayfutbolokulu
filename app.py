@@ -572,7 +572,7 @@ elif secim == "Üye Yönetimi":
                     st.success("Öğrenci bilgileri güncellendi.")
                     st.experimental_rerun()
 
-        with tab_yenile:
+    with tab_yenile:
         ogr_df = st.session_state["ogr"]
         if ogr_df.empty:
             st.info("Yenileme yapabilecek öğrenci bulunmuyor.")
