@@ -15,6 +15,7 @@ from typing import Tuple, Optional, List
 import pandas as pd
 import streamlit as st
 import altair as alt
+import requests
 
 
 # ==========================
@@ -200,6 +201,44 @@ def write_excel(ogr: pd.DataFrame, yok: pd.DataFrame, tah: pd.DataFrame) -> byte
     buff.seek(0)
     return buff.read()
 
+def _extract_drive_confirm_token(response: requests.Response) -> Optional[str]:
+    for key, value in response.cookies.items():
+        if key.startswith("download_warning"):
+            return value
+    return None
+
+
+def download_drive_excel(file_id: str, chunk_size: int = 32768) -> bytes:
+    """Google Drive'dan Excel dosyasını indirip raw bytes döner."""
+    if not file_id:
+        raise ValueError("Dosya ID'si boş olamaz.")
+
+    session = requests.Session()
+    params = {"id": file_id, "export": "download"}
+    url = "https://drive.google.com/uc"
+
+    response = session.get(url, params=params, stream=True)
+    if response.status_code == 404:
+        raise FileNotFoundError("Dosya bulunamadı veya paylaşılmamış olabilir.")
+    response.raise_for_status()
+
+    token = _extract_drive_confirm_token(response)
+    if token:
+        params["confirm"] = token
+        response = session.get(url, params=params, stream=True)
+        response.raise_for_status()
+
+    buffer = io.BytesIO()
+    for chunk in response.iter_content(chunk_size):
+        if chunk:
+            buffer.write(chunk)
+
+    content = buffer.getvalue()
+    if not content:
+        raise ValueError("Google Drive dosya içeriği alınamadı.")
+    return content
+
+
 
 def coerce_date_value(value) -> Optional[date]:
     """Çeşitli tarih formatlarını `date` nesnesine çevir."""
@@ -317,6 +356,31 @@ if uploaded:
     st.session_state["yok"] = yok_yuklu
     st.session_state["tah"] = tah_yuklu
     st.sidebar.success(f"Yüklenen sayfa: {used_sheet}")
+
+drive_default_id = st.session_state.get("drive_file_id", "1EX6e_r6MaPKh6xi03gmOvhVPHFEsSyuB")
+drive_file_id = st.sidebar.text_input(
+    "Google Drive Dosya ID'si",
+    value=drive_default_id,
+    help="Google Drive paylaşım linkindeki kimliği buraya yapıştırın.",
+)
+
+if st.sidebar.button("Drive'dan Excel'i yükle"):
+    cleaned_id = drive_file_id.strip()
+    if not cleaned_id:
+        st.sidebar.error("Lütfen bir dosya ID'si girin.")
+    else:
+        try:
+            with st.spinner("Google Drive'dan indiriliyor..."):
+                excel_bytes = download_drive_excel(cleaned_id)
+            ogr_yuklu, yok_yuklu, tah_yuklu, used_sheet = load_excel(excel_bytes)
+            st.session_state["ogr"] = ogr_yuklu
+            st.session_state["yok"] = yok_yuklu
+            st.session_state["tah"] = tah_yuklu
+            st.session_state["drive_file_id"] = cleaned_id
+            st.sidebar.success(f"Drive dosyası yüklendi: {used_sheet}")
+        except Exception as exc:
+            st.sidebar.error(f"İndirme başarısız: {exc}")
+
 if "ogr" not in st.session_state:
     st.session_state["ogr"] = pd.DataFrame([
         {"ID":1,"AdSoyad":"Demo Öğrenci","Telefon":"0533","Grup":"U10","Seviye":"Başlangıç","Koc":"Ahmet",
