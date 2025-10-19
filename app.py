@@ -143,7 +143,7 @@ def normalize_students_df(df: pd.DataFrame) -> pd.DataFrame:
     df2["ID"] = df2["ID"].fillna(0).astype(int)
 
     for c in ("DogumTarihi","Baslangic","SonOdeme"):
-        df2[c] = pd.to_datetime(df2.get(c), errors="coerce").dt.date
+        df2[c] = df2.get(c).apply(coerce_date_value)
 
     df2["UcretAylik"] = pd.to_numeric(df2.get("UcretAylik", 0), errors="coerce").fillna(0)
     df2["Telefon"] = df2.get("Telefon","").astype(str)
@@ -200,13 +200,32 @@ def write_excel(ogr: pd.DataFrame, yok: pd.DataFrame, tah: pd.DataFrame) -> byte
     return buff.read()
 
 
-def parse_date_str(value: str) -> Optional[date]:
+def coerce_date_value(value) -> Optional[date]:
+    """Çeşitli tarih formatlarını `date` nesnesine çevir."""
     if value is None:
         return None
-    value = str(value).strip()
-    if not value:
+    if isinstance(value, float) and pd.isna(value):
         return None
     parsed = pd.to_datetime(value, errors="coerce")
+        # Sayı olarak sadece yıl bilgisi girilmişse (örn. 2010)
+    if isinstance(value, (int, float)):
+        if isinstance(value, float) and not float(value).is_integer():
+            # Excel seri numaraları veya ondalıklar için pandas'a bırak.
+            pass
+        else:
+            year = int(value)
+            if 1900 <= year <= 2100:
+                return date(year, 1, 1)
+
+    if isinstance(value, str):
+        value_stripped = value.strip()
+        if not value_stripped:
+            return None
+        if value_stripped.isdigit() and len(value_stripped) == 4:
+            year = int(value_stripped)
+            if 1900 <= year <= 2100:
+                return date(year, 1, 1)
+
     if pd.isna(parsed):
         return None
     if isinstance(parsed, pd.Timestamp):
@@ -214,6 +233,10 @@ def parse_date_str(value: str) -> Optional[date]:
     if isinstance(parsed, date):
         return parsed
     return None
+
+def parse_date_str(value: str) -> Optional[date]:
+    return coerce_date_value(value)
+
 
 
 def date_to_str(value) -> str:
