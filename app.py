@@ -180,10 +180,8 @@ else:
     tah = pd.DataFrame(columns=["Tarih","OgrenciID","AdSoyad","Koc","Tutar","Aciklama"])
 
 # ==========================
-# Genel Bakış
+# Genel Bakış ve Menü
 # ==========================
-
-st.header("Genel Bakış")
 
 UYELIK_AY = {0:0, 1:1, 2:3, 3:6, 4:12}
 
@@ -228,46 +226,53 @@ def build_expiry_df(df: pd.DataFrame) -> pd.DataFrame:
 
 exp_df = build_expiry_df(ogr)
 
-c1, c2, c3, c4 = st.columns(4)
+menu_secimleri = [
+    "Genel Bakış Panosu",
+    "Tüm Üyelikler",
+    "Öğrenci Listesi",
+    "Dışa Aktarım",
+]
+
+secim = st.sidebar.radio("Menü", menu_secimleri, index=0)
+
 aktif_say = int(ogr.get("Aktif", pd.Series([True]*len(ogr))).sum()) if not ogr.empty else 0
 uyelikli = int((exp_df.get("UyelikSuresiAy", pd.Series([])) > 0).sum()) if not exp_df.empty else 0
 bugun_icinde = int((exp_df.get("KalanGun", pd.Series([])) == 0).sum()) if not exp_df.empty else 0
-hafta_icinde = int(((exp_df.get("KalanGun", pd.Series([])) >= 0) & (exp_df.get("KalanGun", pd.Series([])) <= 5)).sum()) if not exp_df.empty else 0
-c1.metric("Aktif Öğrenci", aktif_say)
-c2.metric("Üyelikli Öğrenci", uyelikli)
-c3.metric("Bugün Biten", bugun_icinde)
-c4.metric("≤5 Gün Kalan", hafta_icinde)
+kalan_gun = exp_df["KalanGun"] if (not exp_df.empty and "KalanGun" in exp_df) else pd.Series([], dtype="float64")
+yenileme_maske = kalan_gun.between(-5, 5, inclusive="both") if not kalan_gun.empty else pd.Series([], dtype=bool)
+yenileme_penceresi = int(yenileme_maske.sum()) if not exp_df.empty else 0
 
-st.markdown("**≤ 5 gün kalan üyelikler**")
-if not exp_df.empty and ((exp_df["KalanGun"] >= 0) & (exp_df["KalanGun"] <= 5)).any():
-    st.dataframe(exp_df.loc[(exp_df["KalanGun"] >= 0) & (exp_df["KalanGun"] <= 5)], use_container_width=True, hide_index=True)
-else:
-    st.info("Önümüzdeki 5 gün içinde biten üyelik bulunmuyor.")
+yenileme_df = exp_df[yenileme_maske] if not exp_df.empty else exp_df
 
-st.markdown("**Tüm öğrenciler — Üyelik bitiş ve kalan gün**")
-st.dataframe(exp_df, use_container_width=True, hide_index=True)
+if secim == "Genel Bakış Panosu":
+    st.header("Genel Bakış Panosu")
+    c1, c2, c3, c4 = st.columns(4)
+    c1.metric("Aktif Öğrenci", aktif_say)
+    c2.metric("Üyelikli Öğrenci", uyelikli)
+    c3.metric("Bugün Biten", bugun_icinde)
+    c4.metric("±5 Gün Penceresi", yenileme_penceresi)
 
-st.divider()
+    st.markdown("**Yenileme penceresindeki öğrenciler (yenilemeden 5 gün önce - 5 gün sonra)**")
+    if not yenileme_df.empty:
+        st.dataframe(yenileme_df, use_container_width=True, hide_index=True)
+    else:
+        st.info("Yenileme tarihine ±5 gün penceresinde öğrenci bulunmuyor.")
 
-st.subheader("Öğrenci Listesi")
-st.dataframe(ogr, use_container_width=True, hide_index=True)
+elif secim == "Tüm Üyelikler":
+    st.header("Tüm Üyelikler")
+    st.dataframe(exp_df, use_container_width=True, hide_index=True)
 
-# ==========================
-# Dışa Aktar
-# ==========================
+elif secim == "Öğrenci Listesi":
+    st.header("Öğrenci Listesi")
+    st.dataframe(ogr, use_container_width=True, hide_index=True)
 
-def write_excel(ogr, yok, tah):
-    buff = io.BytesIO()
-    with pd.ExcelWriter(buff, engine="openpyxl") as w:
-        ogr.to_excel(w, index=False, sheet_name="Ogrenciler")
-        yok.to_excel(w, index=False, sheet_name="Yoklama")
-        tah.to_excel(w, index=False, sheet_name="Tahsilat")
-    buff.seek(0)
-    return buff.read()
-
-excel_bytes = write_excel(ogr, yok, tah)
-st.download_button("Excel'i indir", data=excel_bytes,
-                   file_name=f"futbol_okulu_{dt.date.today().isoformat()}.xlsx",
-                   mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
-
-st.caption("Otomatik başlık tespiti aktif. Sheet adı: fark etmez (örn. 'students').")
+elif secim == "Dışa Aktarım":
+    st.header("Dışa Aktarım")
+    excel_bytes = write_excel(ogr, yok, tah)
+    st.download_button(
+        "Excel'i indir",
+        data=excel_bytes,
+        file_name=f"futbol_okulu_{dt.date.today().isoformat()}.xlsx",
+        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+    )
+    st.caption("Otomatik başlık tespiti aktif. Sheet adı: fark etmez (örn. 'students').")
