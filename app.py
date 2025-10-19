@@ -200,6 +200,45 @@ def write_excel(ogr: pd.DataFrame, yok: pd.DataFrame, tah: pd.DataFrame) -> byte
     return buff.read()
 
 
+def parse_date_str(value: str) -> Optional[date]:
+    if value is None:
+        return None
+    value = str(value).strip()
+    if not value:
+        return None
+    parsed = pd.to_datetime(value, errors="coerce")
+    if pd.isna(parsed):
+        return None
+    if isinstance(parsed, pd.Timestamp):
+        return parsed.date()
+    if isinstance(parsed, date):
+        return parsed
+    return None
+
+
+def date_to_str(value) -> str:
+    if value is None or (isinstance(value, float) and pd.isna(value)):
+        return ""
+    if isinstance(value, pd.Timestamp):
+        value = value.date()
+    if isinstance(value, date):
+        return value.isoformat()
+    value = str(value).strip()
+    if value.lower() in {"nan", "nat", "none"}:
+        return ""
+    return value
+
+
+def to_int(value, default: int = 0) -> int:
+    if value is None:
+        return default
+    numeric = pd.to_numeric(value, errors="coerce")
+    if pd.isna(numeric):
+        return default
+    return int(numeric)
+
+
+
 # ==========================
 # Uygulama
 # ==========================
@@ -209,15 +248,24 @@ st.sidebar.title("⚽ Futbol Okulu — Otomatik Başlık")
 
 uploaded = st.sidebar.file_uploader("Excel yükle (.xlsx)", type=["xlsx"])
 if uploaded:
-    ogr, yok, tah, used_sheet = load_excel(uploaded.getvalue())
+    ogr_yuklu, yok_yuklu, tah_yuklu, used_sheet = load_excel(uploaded.getvalue())
+    st.session_state["ogr"] = ogr_yuklu
+    st.session_state["yok"] = yok_yuklu
+    st.session_state["tah"] = tah_yuklu
     st.sidebar.success(f"Yüklenen sayfa: {used_sheet}")
-else:
-    ogr = pd.DataFrame([
+if "ogr" not in st.session_state:
+    st.session_state["ogr"] = pd.DataFrame([
         {"ID":1,"AdSoyad":"Demo Öğrenci","Telefon":"0533","Grup":"U10","Seviye":"Başlangıç","Koc":"Ahmet",
          "Baslangic":dt.date(2025,9,1),"UcretAylik":1500,"SonOdeme":dt.date(2025,10,1),"Aktif":True,"AktifDurumu":"Aktif","UyelikTercihi":1}
     ])
-    yok = pd.DataFrame(columns=["Tarih","Grup","OgrenciID","AdSoyad","Koc","Katildi","Not"])
-    tah = pd.DataFrame(columns=["Tarih","OgrenciID","AdSoyad","Koc","Tutar","Aciklama"])
+if "yok" not in st.session_state:
+    st.session_state["yok"] = pd.DataFrame(columns=["Tarih","Grup","OgrenciID","AdSoyad","Koc","Katildi","Not"])
+if "tah" not in st.session_state:
+    st.session_state["tah"] = pd.DataFrame(columns=["Tarih","OgrenciID","AdSoyad","Koc","Tutar","Aciklama"])
+
+ogr = st.session_state["ogr"]
+yok = st.session_state["yok"]
+tah = st.session_state["tah"]
 
 # ==========================
 # Genel Bakış ve Menü
@@ -286,6 +334,7 @@ exp_df = build_expiry_df(ogr)
 
 menu_secimleri = [
     "Genel Bakış Panosu",
+    "Üye Yönetimi",    
     "Tüm Üyelikler",
     "Öğrenci Listesi",
     "Dışa Aktarım",
@@ -337,6 +386,165 @@ if secim == "Genel Bakış Panosu":
         st.dataframe(yenileme_df, use_container_width=True, hide_index=True)
     else:
         st.info("Yenileme tarihine ±5 gün penceresinde öğrenci bulunmuyor.")
+
+
+elif secim == "Üye Yönetimi":
+    st.header("Üye Yönetimi")
+    if ogr.empty:
+        st.info("Henüz öğrenci bulunmuyor. Yeni bir öğrenci ekleyebilirsiniz.")
+
+    tab_ekle, tab_duzenle, tab_sil = st.tabs(["Yeni Üye Ekle", "Üyeyi Düzenle", "Üye Sil"])
+
+    with tab_ekle:
+        ogr_df = st.session_state["ogr"]
+        mevcut_id_serisi = pd.to_numeric(ogr_df.get("ID"), errors="coerce") if "ID" in ogr_df.columns else pd.Series(dtype=float)
+        varsayilan_id = to_int(mevcut_id_serisi.max(), default=0) + 1
+        with st.form("yeni_ogrenci_form"):
+            col1, col2, col3 = st.columns(3)
+            yeni_id = col1.number_input("ID", min_value=1, value=varsayilan_id, step=1)
+            ad_soyad = col1.text_input("Ad Soyad")
+            veli_ad_soyad = col1.text_input("Veli Ad Soyad")
+            telefon = col1.text_input("Telefon")
+
+            dogum_tarihi = col2.text_input("Doğum Tarihi (YYYY-AA-GG)")
+            grup = col2.text_input("Grup")
+            seviye = col2.text_input("Seviye")
+            koc = col2.text_input("Koç")
+
+            baslangic_tarihi = col3.text_input("Başlangıç Tarihi (YYYY-AA-GG)")
+            son_odeme = col3.text_input("Son Ödeme Tarihi (YYYY-AA-GG)")
+            ucret = col3.number_input("Ücret (Aylık)", min_value=0.0, step=100.0, value=0.0)
+
+            uyelik_kodlari = list(UYELIK_LABELS.keys())
+            uyelik_tercihi = col3.selectbox("Üyelik Tercihi", uyelik_kodlari, format_func=lambda k: UYELIK_LABELS.get(k, ""))
+            uyelik_gun = col2.text_input("Üyelik Gün Tercihi")
+            uyelik_yenileme = col2.text_input("Üyelik Yenileme Tercihi")
+
+            aktif_durum_options = ["Aktif", "Dondurmuş", "Pasif"]
+            aktif_durumu = col3.selectbox("Aktif Durumu", aktif_durum_options, index=0)
+
+            ekle_submit = st.form_submit_button("Öğrenciyi Ekle")
+
+        if ekle_submit:
+            mevcut_idler = set(pd.to_numeric(ogr_df.get("ID"), errors="coerce").dropna().astype(int))
+            yeni_id_int = int(yeni_id)
+            if yeni_id_int in mevcut_idler:
+                st.error("Bu ID'ye sahip bir öğrenci zaten mevcut. Lütfen farklı bir ID girin.")
+            else:
+                dogum_dt = parse_date_str(dogum_tarihi)
+                baslangic_dt = parse_date_str(baslangic_tarihi)
+                son_odeme_dt = parse_date_str(son_odeme)
+                yeni_kayit = {
+                    "ID": yeni_id_int,
+                    "AdSoyad": ad_soyad.strip(),
+                    "DogumTarihi": dogum_dt,
+                    "VeliAdSoyad": veli_ad_soyad.strip(),
+                    "Telefon": telefon.strip(),
+                    "Grup": grup.strip(),
+                    "Seviye": seviye.strip(),
+                    "Koc": koc.strip(),
+                    "Baslangic": baslangic_dt,
+                    "UcretAylik": float(ucret),
+                    "SonOdeme": son_odeme_dt,
+                    "Aktif": aktif_durumu == "Aktif",
+                    "AktifDurumu": aktif_durumu,
+                    "UyelikTercihi": int(uyelik_tercihi),
+                    "UyelikGunTercihi": uyelik_gun.strip(),
+                    "UyelikYenilemeTercihi": uyelik_yenileme.strip(),
+                }
+                for col in BASE_COLS:
+                    yeni_kayit.setdefault(col, None)
+                st.session_state["ogr"] = pd.concat([ogr_df, pd.DataFrame([yeni_kayit])], ignore_index=True)
+                st.success("Öğrenci eklendi.")
+                st.experimental_rerun()
+
+    with tab_duzenle:
+        ogr_df = st.session_state["ogr"]
+        if ogr_df.empty:
+            st.info("Düzenlenecek öğrenci bulunmuyor.")
+        else:
+            secenekler = list(ogr_df.index)
+            secilen_indeks = st.selectbox(
+                "Düzenlenecek öğrenciyi seçin",
+                options=secenekler,
+                format_func=lambda idx: f"{ogr_df.loc[idx, 'ID']} - {ogr_df.loc[idx, 'AdSoyad']}"
+            )
+            satir = ogr_df.loc[secilen_indeks]
+            mevcut_uyelik = to_int(satir.get("UyelikTercihi"), default=0)
+            mevcut_aktif_durum = satir.get("AktifDurumu") or ("Aktif" if bool(satir.get("Aktif", True)) else "Pasif")
+
+            with st.form(f"duzenle_form_{secilen_indeks}"):
+                col1, col2, col3 = st.columns(3)
+                duzenle_id = col1.number_input("ID", min_value=1, value=to_int(satir.get("ID"), default=1), step=1)
+                duzenle_ad = col1.text_input("Ad Soyad", value=str(satir.get("AdSoyad") or ""))
+                duzenle_veli = col1.text_input("Veli Ad Soyad", value=str(satir.get("VeliAdSoyad") or ""))
+                duzenle_tel = col1.text_input("Telefon", value=str(satir.get("Telefon") or ""))
+
+                duzenle_dogum = col2.text_input("Doğum Tarihi (YYYY-AA-GG)", value=date_to_str(satir.get("DogumTarihi")))
+                duzenle_grup = col2.text_input("Grup", value=str(satir.get("Grup") or ""))
+                duzenle_seviye = col2.text_input("Seviye", value=str(satir.get("Seviye") or ""))
+                duzenle_koc = col2.text_input("Koç", value=str(satir.get("Koc") or ""))
+
+                duzenle_baslangic = col3.text_input("Başlangıç Tarihi (YYYY-AA-GG)", value=date_to_str(satir.get("Baslangic")))
+                duzenle_son_odeme = col3.text_input("Son Ödeme Tarihi (YYYY-AA-GG)", value=date_to_str(satir.get("SonOdeme")))
+                duzenle_ucret = col3.number_input("Ücret (Aylık)", min_value=0.0, step=100.0, value=float(pd.to_numeric(satir.get("UcretAylik"), errors="coerce") or 0.0))
+
+                uyelik_tercihi_duzenle = col3.selectbox("Üyelik Tercihi", list(UYELIK_LABELS.keys()), index=list(UYELIK_LABELS.keys()).index(mevcut_uyelik) if mevcut_uyelik in UYELIK_LABELS else 0, format_func=lambda k: UYELIK_LABELS.get(k, ""))
+                duzenle_uyelik_gun = col2.text_input("Üyelik Gün Tercihi", value=str(satir.get("UyelikGunTercihi") or ""))
+                duzenle_uyelik_yenileme = col2.text_input("Üyelik Yenileme Tercihi", value=str(satir.get("UyelikYenilemeTercihi") or ""))
+
+                aktif_durum_options = ["Aktif", "Dondurmuş", "Pasif"]
+                aktif_index = aktif_durum_options.index(mevcut_aktif_durum) if mevcut_aktif_durum in aktif_durum_options else 0
+                duzenle_aktif_durum = col3.selectbox("Aktif Durumu", aktif_durum_options, index=aktif_index)
+
+                duzenle_submit = st.form_submit_button("Değişiklikleri Kaydet")
+
+            if duzenle_submit:
+                duzenle_id_int = int(duzenle_id)
+                mevcut_idler = set(pd.to_numeric(ogr_df.get("ID"), errors="coerce").dropna().astype(int)) - {int(pd.to_numeric(satir.get("ID"), errors="coerce") or 0)}
+                if duzenle_id_int in mevcut_idler:
+                    st.error("Bu ID başka bir öğrenciye ait. Lütfen farklı bir ID seçin.")
+                else:
+                    guncel_df = ogr_df.copy()
+                    guncel_df.loc[secilen_indeks, "ID"] = duzenle_id_int
+                    guncel_df.loc[secilen_indeks, "AdSoyad"] = duzenle_ad.strip()
+                    guncel_df.loc[secilen_indeks, "DogumTarihi"] = parse_date_str(duzenle_dogum)
+                    guncel_df.loc[secilen_indeks, "VeliAdSoyad"] = duzenle_veli.strip()
+                    guncel_df.loc[secilen_indeks, "Telefon"] = duzenle_tel.strip()
+                    guncel_df.loc[secilen_indeks, "Grup"] = duzenle_grup.strip()
+                    guncel_df.loc[secilen_indeks, "Seviye"] = duzenle_seviye.strip()
+                    guncel_df.loc[secilen_indeks, "Koc"] = duzenle_koc.strip()
+                    guncel_df.loc[secilen_indeks, "Baslangic"] = parse_date_str(duzenle_baslangic)
+                    guncel_df.loc[secilen_indeks, "UcretAylik"] = float(duzenle_ucret)
+                    guncel_df.loc[secilen_indeks, "SonOdeme"] = parse_date_str(duzenle_son_odeme)
+                    guncel_df.loc[secilen_indeks, "AktifDurumu"] = duzenle_aktif_durum
+                    guncel_df.loc[secilen_indeks, "Aktif"] = duzenle_aktif_durum == "Aktif"
+                    guncel_df.loc[secilen_indeks, "UyelikTercihi"] = int(uyelik_tercihi_duzenle)
+                    guncel_df.loc[secilen_indeks, "UyelikGunTercihi"] = duzenle_uyelik_gun.strip()
+                    guncel_df.loc[secilen_indeks, "UyelikYenilemeTercihi"] = duzenle_uyelik_yenileme.strip()
+                    st.session_state["ogr"] = guncel_df.reset_index(drop=True)
+                    st.success("Öğrenci bilgileri güncellendi.")
+                    st.experimental_rerun()
+
+    with tab_sil:
+        ogr_df = st.session_state["ogr"]
+        if ogr_df.empty:
+            st.info("Silinecek öğrenci bulunmuyor.")
+        else:
+            silinecekler = st.multiselect(
+                "Silinecek öğrencileri seçin",
+                options=list(ogr_df.index),
+                format_func=lambda idx: f"{ogr_df.loc[idx, 'ID']} - {ogr_df.loc[idx, 'AdSoyad']}"
+            )
+            if st.button("Seçilen Öğrencileri Sil"):
+                if not silinecekler:
+                    st.warning("Silmek için en az bir öğrenci seçin.")
+                else:
+                    guncel_df = ogr_df.drop(index=silinecekler).reset_index(drop=True)
+                    st.session_state["ogr"] = guncel_df
+                    st.success("Seçilen öğrenciler silindi.")
+                    st.experimental_rerun()
+
 
 elif secim == "Tüm Üyelikler":
     st.header("Tüm Üyelikler")
