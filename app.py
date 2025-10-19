@@ -59,7 +59,7 @@ def resolve_membership_status(value) -> str:
             numeric_value = None
 
     if numeric_value is not None:
-        if numeric_value == 3:
+        if numeric_value in {2, 3}:
             return "Dondurmuş"
         return "Aktif" if numeric_value != 0 else "Pasif"
 
@@ -88,6 +88,7 @@ ALIAS_MAP = {
     "uyelikyenilemetarihi": "SonOdeme", "uyelik yenileme tarihi": "SonOdeme",
     "uyelikguntercihi": "UyelikGunTercihi", "uyelik gun tercihi": "UyelikGunTercihi",
     "uyelikyenilemetercihi": "UyelikYenilemeTercihi", "uyelik yenileme tercihi": "UyelikYenilemeTercihi",
+    "uyelik durumu": "UyelikDurumu",    
 }
 
 HEADER_HINTS = {"adi","soyadi","telefon","grup","koc","kayit","uyelik","seviye"}
@@ -147,7 +148,11 @@ def normalize_students_df(df: pd.DataFrame) -> pd.DataFrame:
     df2["UcretAylik"] = pd.to_numeric(df2.get("UcretAylik", 0), errors="coerce").fillna(0)
     df2["Telefon"] = df2.get("Telefon","").astype(str)
 
-    if "Aktif" in df2.columns:
+    if "UyelikDurumu" in df2.columns:
+        raw_status = df2["UyelikDurumu"]
+    elif "AktifDurumu" in df2.columns:
+        raw_status = df2["AktifDurumu"]
+    elif "Aktif" in df2.columns:
         raw_status = df2["Aktif"]
     else:
         raw_status = pd.Series([True] * len(df2))
