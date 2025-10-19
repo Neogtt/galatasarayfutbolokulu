@@ -94,7 +94,25 @@ ALIAS_MAP = {
 }
 
 HEADER_HINTS = {"adi","soyadi","telefon","grup","koc","kayit","uyelik","seviye"}
-COACH_PANEL_MENU = "Koç Yoklama Paneli"
+
+COACH_PANEL_MENU = "Yoklama"
+ATTENDANCE_SELECTIONS = ["Kaydedilmedi", "Katıldı", "Katılmadı"]
+
+
+def attendance_label_to_value(label: str) -> Optional[bool]:
+    """Kullanıcının seçtiği etiket değerini booleana çevir."""
+    if label is None:
+        return None
+    normalized = norm_key(label)
+    if not normalized:
+        return None
+    if normalized in {"katildi", "geldi", "var", "evet", "true", "1"}:
+        return True
+    if normalized in {"katilmadi", "gelmedi", "yok", "hayir", "false", "0"}:
+        return False
+    if normalized in {"kaydedilmedi", "bos", "none"}:
+        return None
+    return interpret_attendance_bool(label)
 
 
 def load_coach_users() -> Dict[str, Dict[str, Any]]:
@@ -453,6 +471,70 @@ def build_coach_attendance_view(coach_name: str, ogr_df: pd.DataFrame, yok_df: p
     display_cols = ["ID", "Ad Soyad", "Grup", "Seviye", "Katılım", "Not"]
     return df[display_cols + ["_katildi_bool"]]
 
+# ==========================
+# Yoklama Kaydetme
+# ==========================
+
+def save_coach_attendance(
+    coach_name: str,
+    target_date: date,
+    attendance_df: pd.DataFrame,
+    state_key: str = "yok",
+) -> None:
+    """Koçun seçtiği yoklama değerlerini session state'e kaydet."""
+
+    if attendance_df is None:
+        return
+
+    existing = st.session_state.get(state_key)
+    if existing is None or not isinstance(existing, pd.DataFrame):
+        existing = pd.DataFrame(columns=["Tarih", "Grup", "OgrenciID", "AdSoyad", "Koc", "Katildi", "Not"])
+
+    yok_df = existing.copy()
+    if yok_df.empty:
+        yok_df = pd.DataFrame(columns=["Tarih", "Grup", "OgrenciID", "AdSoyad", "Koc", "Katildi", "Not"])
+
+    if "Tarih" in yok_df.columns and not yok_df.empty:
+        yok_df["Tarih"] = pd.to_datetime(yok_df.get("Tarih"), errors="coerce").dt.date
+    yok_df["KocKey"] = yok_df.get("Koc", "").astype(str).map(norm_key)
+
+    coach_key = norm_key(coach_name)
+    mask = (yok_df["KocKey"] == coach_key) & (yok_df.get("Tarih") == target_date)
+    yok_df = yok_df.loc[~mask, ["Tarih", "Grup", "OgrenciID", "AdSoyad", "Koc", "Katildi", "Not"]].copy()
+
+    new_rows = []
+    for _, row in attendance_df.iterrows():
+        selection = str(row.get("Katılım", "")).strip()
+        note_value = row.get("Not")
+        note = "" if note_value is None else str(note_value).strip()
+        katildi_value = attendance_label_to_value(selection)
+
+        if katildi_value is None and not note:
+            continue
+
+        ogr_id = row.get("ID")
+        try:
+            ogr_id_int = int(ogr_id) if not pd.isna(ogr_id) else None
+        except Exception:
+            ogr_id_int = None
+
+        new_rows.append(
+            {
+                "Tarih": target_date,
+                "Grup": row.get("Grup"),
+                "OgrenciID": ogr_id_int,
+                "AdSoyad": row.get("Ad Soyad"),
+                "Koc": coach_name,
+                "Katildi": katildi_value,
+                "Not": note,
+            }
+        )
+
+    if new_rows:
+        yok_df = pd.concat([yok_df, pd.DataFrame(new_rows)], ignore_index=True)
+
+    st.session_state[state_key] = yok_df
+
 
 # ==========================
 # Yaş Hesaplama
@@ -652,6 +734,7 @@ else:
         "Tüm Üyelikler",
         "İstatistikler",
         "Dışa Aktarım",
+        COACH_PANEL_MENU,
     ]
 
 menu_key = "sidebar_menu_choice"
