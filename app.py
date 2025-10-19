@@ -329,9 +329,15 @@ elif secim == "Tüm Üyelikler":
         preference_options.extend(extra_preferences)
 
         filt_col1, filt_col2, filt_col3 = st.columns(3)
-        secilen_durumlar = filt_col1.multiselect("Üyelik durumu", durum_options, default=durum_options)
-        secilen_gruplar = filt_col2.multiselect("Grup", group_options, default=group_options)
-        secilen_tercihler = filt_col3.multiselect("Üyelik tercihi", preference_options, default=preference_options)
+        secilen_durumlar = filt_col1.multiselect(
+            "Üyelik durumu", durum_options, placeholder="Seçiniz"
+        )
+        secilen_gruplar = filt_col2.multiselect(
+            "Grup", group_options, placeholder="Seçiniz"
+        )
+        secilen_tercihler = filt_col3.multiselect(
+            "Üyelik tercihi", preference_options, placeholder="Seçiniz"
+        )
 
         filtreli_df = exp_df.copy()
         if secilen_durumlar:
