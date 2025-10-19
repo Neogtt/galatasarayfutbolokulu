@@ -293,22 +293,44 @@ menu_secimleri = [
 
 secim = st.sidebar.radio("Menü", menu_secimleri, index=0)
 
-aktif_say = int(ogr.get("Aktif", pd.Series([True]*len(ogr))).sum()) if not ogr.empty else 0
-uyelikli = int((exp_df.get("UyelikSuresiAy", pd.Series([])) > 0).sum()) if not exp_df.empty else 0
-bugun_icinde = int((exp_df.get("KalanGun", pd.Series([])) == 0).sum()) if not exp_df.empty else 0
-kalan_gun = exp_df["KalanGun"] if (not exp_df.empty and "KalanGun" in exp_df) else pd.Series([], dtype="float64")
-yenileme_maske = kalan_gun.between(-5, 5, inclusive="both") if not kalan_gun.empty else pd.Series([], dtype=bool)
+toplam_ogrenci = len(ogr)
+
+if not ogr.empty:
+    if "AktifDurumu" in ogr.columns:
+        durum_serisi = ogr["AktifDurumu"].fillna("Pasif").apply(resolve_membership_status)
+    else:
+        durum_serisi = ogr.get("Aktif", pd.Series([True] * len(ogr))).apply(resolve_membership_status)
+else:
+    durum_serisi = pd.Series(dtype=object)
+
+aktif_say = int((durum_serisi == "Aktif").sum())
+dondurmus_say = int((durum_serisi == "Dondurmuş").sum())
+pasif_say = int((durum_serisi == "Pasif").sum())
+
+if not exp_df.empty and "KalanGun" in exp_df:
+    kalan_gun_serisi = pd.to_numeric(exp_df["KalanGun"], errors="coerce")
+else:
+    kalan_gun_serisi = pd.Series(dtype="float64")
+
+odeme_5gun_say = int(kalan_gun_serisi.between(0, 5, inclusive="both").sum()) if not kalan_gun_serisi.empty else 0
+odeme_gecikmis_say = int((kalan_gun_serisi < 0).sum()) if not kalan_gun_serisi.empty else 0
+
+yenileme_maske = kalan_gun_serisi.between(-5, 5, inclusive="both") if not kalan_gun_serisi.empty else pd.Series([], dtype=bool)
 yenileme_penceresi = int(yenileme_maske.sum()) if not exp_df.empty else 0
 
 yenileme_df = exp_df[yenileme_maske] if not exp_df.empty else exp_df
 
 if secim == "Genel Bakış Panosu":
     st.header("Genel Bakış Panosu")
-    c1, c2, c3, c4 = st.columns(4)
-    c1.metric("Aktif Öğrenci", aktif_say)
-    c2.metric("Üyelikli Öğrenci", uyelikli)
-    c3.metric("Bugün Biten", bugun_icinde)
-    c4.metric("±5 Gün Penceresi", yenileme_penceresi)
+    c1, c2, c3 = st.columns(3)
+    c1.metric("Toplam Öğrenci", toplam_ogrenci)
+    c2.metric("Dondurmuş Öğrenci", dondurmus_say)
+    c3.metric("Aktif Öğrenci", aktif_say)
+
+    c4, c5, c6 = st.columns(3)
+    c4.metric("Pasif Öğrenci", pasif_say)
+    c5.metric("Ödeme Gününe 5 Gün Kalan", odeme_5gun_say)
+    c6.metric("Ödemesi Gecikmiş Öğrenci", odeme_gecikmis_say)
 
     st.markdown("**Yenileme penceresindeki öğrenciler (yenilemeden 5 gün önce - 5 gün sonra)**")
     if not yenileme_df.empty:
