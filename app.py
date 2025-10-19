@@ -487,7 +487,6 @@ elif secim == "Üye Yönetimi":
             uyelik_kodlari = list(UYELIK_LABELS.keys())
             uyelik_tercihi = col3.selectbox("Üyelik Tercihi", uyelik_kodlari, format_func=lambda k: UYELIK_LABELS.get(k, ""))
             uyelik_gun = col2.text_input("Üyelik Gün Tercihi")
-            uyelik_yenileme = col2.text_input("Üyelik Yenileme Tercihi")
 
             aktif_durum_options = ["Aktif", "Dondurmuş", "Pasif"]
             aktif_durumu = col3.selectbox("Aktif Durumu", aktif_durum_options, index=0)
@@ -519,7 +518,6 @@ elif secim == "Üye Yönetimi":
                     "AktifDurumu": aktif_durumu,
                     "UyelikTercihi": int(uyelik_tercihi),
                     "UyelikGunTercihi": uyelik_gun.strip(),
-                    "UyelikYenilemeTercihi": uyelik_yenileme.strip(),
                 }
                 for col in BASE_COLS:
                     yeni_kayit.setdefault(col, None)
