@@ -1197,10 +1197,7 @@ elif secim == "İstatistikler":
                 if yas_df.empty or yas_df["Sayi"].sum() == 0:
                     st.info("Yaş grubu hesaplamak için geçerli doğum tarihi bulunamadı.")
                 else:
-                    yas_chart = (
-                        alt.Chart(yas_df)
-                        .mark_arc()
-                        .encode(
+                    yas_chart = alt.Chart(yas_df).mark_arc().encode(
                             theta=alt.Theta(field="Sayi", type="quantitative"),
                             color=alt.Color(field="YasGrubu", type="nominal"),
                             tooltip=[
