@@ -1214,10 +1214,7 @@ elif secim == "İstatistikler":
                 if uyelik_df.empty or uyelik_df["Sayi"].sum() == 0:
                     st.info("Üyelik tercihi verisi bulunamadı.")
                 else:
-                    uyelik_chart = (
-                        alt.Chart(uyelik_df)
-                        .mark_arc()
-                        .encode(
+                    uyelik_chart = alt.Chart(uyelik_df).mark_arc().encode(
                             theta=alt.Theta(field="Sayi", type="quantitative"),
                             color=alt.Color(field="UyelikTercihi", type="nominal"),
                             tooltip=[
