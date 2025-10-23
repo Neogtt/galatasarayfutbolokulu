@@ -10,12 +10,12 @@ FUTBOL OKULU — Streamlit (Py3.8+) — OTOMATIK BAŞLIK TESPİTİ
 import io
 from datetime import date
 import datetime as dt
-from typing import Tuple, Optional, List
+from typing import Tuple, Optional, List, Dict, Any
 
 import pandas as pd
 import streamlit as st
 import altair as alt
-
+import requests
 
 # ==========================
 # Normalizasyon
@@ -93,6 +93,102 @@ ALIAS_MAP = {
 }
 
 HEADER_HINTS = {"adi","soyadi","telefon","grup","koc","kayit","uyelik","seviye"}
+
+COACH_PANEL_MENU = "Yoklama"
+ATTENDANCE_SELECTIONS = ["Kaydedilmedi", "Katıldı", "Katılmadı"]
+
+
+def attendance_label_to_value(label: str) -> Optional[bool]:
+    """Kullanıcının seçtiği etiket değerini booleana çevir."""
+    if label is None:
+        return None
+    normalized = norm_key(label)
+    if not normalized:
+        return None
+    if normalized in {"katildi", "geldi", "var", "evet", "true", "1"}:
+        return True
+    if normalized in {"katilmadi", "gelmedi", "yok", "hayir", "false", "0"}:
+        return False
+    if normalized in {"kaydedilmedi", "bos", "none"}:
+        return None
+    return interpret_attendance_bool(label)
+
+
+def load_coach_users() -> Dict[str, Dict[str, Any]]:
+    """Streamlit secrets üzerinden (varsa) koç kullanıcılarını oku."""
+    users: Dict[str, Dict[str, Any]] = {}
+    secrets_block: Optional[Dict[str, Any]] = None
+    try:
+        secrets_block = st.secrets["coach_users"]  # type: ignore[index]
+    except Exception:
+        secrets_block = None
+
+    if secrets_block:
+        for username, payload in secrets_block.items():
+            if not isinstance(payload, (dict,)):
+                continue
+            password = str(payload.get("password", "")).strip()
+            if not password:
+                continue
+            coach_name = payload.get("coach_name") or payload.get("coach") or payload.get("koc")
+            groups_value = payload.get("groups") or payload.get("gruplar") or []
+            if isinstance(groups_value, str):
+                groups = [g.strip() for g in groups_value.split(",") if g.strip()]
+            elif isinstance(groups_value, (list, tuple, set)):
+                groups = [str(g).strip() for g in groups_value if str(g).strip()]
+            else:
+                groups = []
+            users[norm_key(username)] = {
+                "username": str(username).strip(),
+                "password": password,
+                "coach_name": str(coach_name).strip() if coach_name else None,
+                "groups": groups,
+            }
+
+        default_username = "ilker"
+    default_user_payload = {
+        "username": default_username,
+        "password": "gs12345!",
+        "coach_name": "İlker",
+        "groups": [],
+    }
+    default_key = norm_key(default_username)
+    if default_key not in users:
+        users[default_key] = default_user_payload
+        
+    return users
+
+
+def interpret_attendance_bool(value) -> Optional[bool]:
+    if value is None:
+        return None
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, (int, float)) and not pd.isna(value):
+        return bool(int(value))
+    if isinstance(value, str):
+        nk = norm_key(value)
+        if nk in {"1", "true", "evet", "var", "geldi", "katildi"}:
+            return True
+        if nk in {"0", "false", "hayir", "yok", "gelmedi", "katilmadi"}:
+            return False
+    return None
+
+
+def format_attendance_value(value) -> str:
+    interpreted = interpret_attendance_bool(value)
+    if interpreted is True:
+        return "Katıldı"
+    if interpreted is False:
+        return "Katılmadı"
+    if value is None:
+        return "Kaydedilmedi"
+    if isinstance(value, float) and pd.isna(value):
+        return "Kaydedilmedi"
+    value_str = str(value).strip()
+    if not value_str:
+        return "Kaydedilmedi"
+    return value_str
 
 
 def detect_header_row(df: pd.DataFrame, scan_rows: int = 30) -> int:
@@ -200,6 +296,44 @@ def write_excel(ogr: pd.DataFrame, yok: pd.DataFrame, tah: pd.DataFrame) -> byte
     buff.seek(0)
     return buff.read()
 
+def _extract_drive_confirm_token(response: requests.Response) -> Optional[str]:
+    for key, value in response.cookies.items():
+        if key.startswith("download_warning"):
+            return value
+    return None
+
+
+def download_drive_excel(file_id: str, chunk_size: int = 32768) -> bytes:
+    """Google Drive'dan Excel dosyasını indirip raw bytes döner."""
+    if not file_id:
+        raise ValueError("Dosya ID'si boş olamaz.")
+
+    session = requests.Session()
+    params = {"id": file_id, "export": "download"}
+    url = "https://drive.google.com/uc"
+
+    response = session.get(url, params=params, stream=True)
+    if response.status_code == 404:
+        raise FileNotFoundError("Dosya bulunamadı veya paylaşılmamış olabilir.")
+    response.raise_for_status()
+
+    token = _extract_drive_confirm_token(response)
+    if token:
+        params["confirm"] = token
+        response = session.get(url, params=params, stream=True)
+        response.raise_for_status()
+
+    buffer = io.BytesIO()
+    for chunk in response.iter_content(chunk_size):
+        if chunk:
+            buffer.write(chunk)
+
+    content = buffer.getvalue()
+    if not content:
+        raise ValueError("Google Drive dosya içeriği alınamadı.")
+    return content
+
+
 
 def coerce_date_value(value) -> Optional[date]:
     """Çeşitli tarih formatlarını `date` nesnesine çevir."""
@@ -275,6 +409,142 @@ def format_display_value(value) -> str:
     return str(value)
 
 
+def build_coach_attendance_view(coach_name: str, ogr_df: pd.DataFrame, yok_df: pd.DataFrame, target_date: date) -> pd.DataFrame:
+    if ogr_df is None or ogr_df.empty:
+        return pd.DataFrame()
+
+    coach_key = norm_key(coach_name)
+    ogr_tmp = ogr_df.copy()
+    ogr_tmp["KocKey"] = ogr_tmp.get("Koc", "").astype(str).map(norm_key)
+    coach_students = ogr_tmp[ogr_tmp["KocKey"] == coach_key].copy()
+
+    if coach_students.empty:
+        return pd.DataFrame()
+
+    coach_students["ID"] = pd.to_numeric(coach_students.get("ID"), errors="coerce")
+    coach_students["Grup"] = coach_students.get("Grup").fillna("")
+    coach_students["Seviye"] = coach_students.get("Seviye").fillna("")
+
+    yok_filtered = pd.DataFrame()
+    if yok_df is not None and not yok_df.empty:
+        yok_tmp = yok_df.copy()
+        if "Tarih" in yok_tmp.columns:
+            yok_tmp["Tarih"] = pd.to_datetime(yok_tmp.get("Tarih"), errors="coerce").dt.date
+        yok_tmp["KocKey"] = yok_tmp.get("Koc", "").astype(str).map(norm_key)
+        yok_tmp["OgrenciID"] = pd.to_numeric(yok_tmp.get("OgrenciID"), errors="coerce")
+        if "AdSoyad" not in yok_tmp.columns:
+            yok_tmp["AdSoyad"] = ""
+        yok_filtered = yok_tmp[(yok_tmp["KocKey"] == coach_key) & (yok_tmp["Tarih"] == target_date)].copy()
+
+    records: List[Dict[str, Any]] = []
+    attendance_rows: Dict[Any, pd.Series] = {}
+
+    if not yok_filtered.empty:
+        yok_filtered["AdSoyadKey"] = yok_filtered["AdSoyad"].astype(str).map(norm_key)
+        for _, row in yok_filtered.iterrows():
+            sid = row.get("OgrenciID")
+            if not pd.isna(sid):
+                attendance_rows.setdefault(("id", int(sid)), row)
+            name_key = row.get("AdSoyadKey")
+            if name_key:
+                attendance_rows.setdefault(("name", name_key), row)
+
+    for _, student in coach_students.iterrows():
+        sid = student.get("ID")
+        name = student.get("AdSoyad")
+        name_key = norm_key(name)
+
+        att_row = None
+        if not pd.isna(sid):
+            att_row = attendance_rows.get(("id", int(sid)))
+        if att_row is None and name_key:
+            att_row = attendance_rows.get(("name", name_key))
+
+        katildi_raw = att_row.get("Katildi") if att_row is not None else None
+        not_raw = att_row.get("Not") if att_row is not None else ""
+        katildi_bool = interpret_attendance_bool(katildi_raw)
+
+        records.append({
+            "ID": int(sid) if not pd.isna(sid) else student.get("ID"),
+            "Ad Soyad": name,
+            "Grup": student.get("Grup"),
+            "Seviye": student.get("Seviye"),
+            "Katılım": format_attendance_value(katildi_raw),
+            "Not": str(not_raw).strip() if isinstance(not_raw, str) else not_raw,
+            "_katildi_bool": katildi_bool,
+        })
+
+    df = pd.DataFrame(records)
+    if df.empty:
+        return df
+
+    display_cols = ["ID", "Ad Soyad", "Grup", "Seviye", "Katılım", "Not"]
+    return df[display_cols + ["_katildi_bool"]]
+
+# ==========================
+# Yoklama Kaydetme
+# ==========================
+
+def save_coach_attendance(
+    coach_name: str,
+    target_date: date,
+    attendance_df: pd.DataFrame,
+    state_key: str = "yok",
+) -> None:
+    """Koçun seçtiği yoklama değerlerini session state'e kaydet."""
+
+    if attendance_df is None:
+        return
+
+    existing = st.session_state.get(state_key)
+    if existing is None or not isinstance(existing, pd.DataFrame):
+        existing = pd.DataFrame(columns=["Tarih", "Grup", "OgrenciID", "AdSoyad", "Koc", "Katildi", "Not"])
+
+    yok_df = existing.copy()
+    if yok_df.empty:
+        yok_df = pd.DataFrame(columns=["Tarih", "Grup", "OgrenciID", "AdSoyad", "Koc", "Katildi", "Not"])
+
+    if "Tarih" in yok_df.columns and not yok_df.empty:
+        yok_df["Tarih"] = pd.to_datetime(yok_df.get("Tarih"), errors="coerce").dt.date
+    yok_df["KocKey"] = yok_df.get("Koc", "").astype(str).map(norm_key)
+
+    coach_key = norm_key(coach_name)
+    mask = (yok_df["KocKey"] == coach_key) & (yok_df.get("Tarih") == target_date)
+    yok_df = yok_df.loc[~mask, ["Tarih", "Grup", "OgrenciID", "AdSoyad", "Koc", "Katildi", "Not"]].copy()
+
+    new_rows = []
+    for _, row in attendance_df.iterrows():
+        selection = str(row.get("Katılım", "")).strip()
+        note_value = row.get("Not")
+        note = "" if note_value is None else str(note_value).strip()
+        katildi_value = attendance_label_to_value(selection)
+
+        if katildi_value is None and not note:
+            continue
+
+        ogr_id = row.get("ID")
+        try:
+            ogr_id_int = int(ogr_id) if not pd.isna(ogr_id) else None
+        except Exception:
+            ogr_id_int = None
+
+        new_rows.append(
+            {
+                "Tarih": target_date,
+                "Grup": row.get("Grup"),
+                "OgrenciID": ogr_id_int,
+                "AdSoyad": row.get("Ad Soyad"),
+                "Koc": coach_name,
+                "Katildi": katildi_value,
+                "Not": note,
+            }
+        )
+
+    if new_rows:
+        yok_df = pd.concat([yok_df, pd.DataFrame(new_rows)], ignore_index=True)
+
+    st.session_state[state_key] = yok_df
+
 
 # ==========================
 # Yaş Hesaplama
@@ -303,6 +573,39 @@ def compute_age(birth_value, today: date) -> Optional[int]:
 
 
 
+def build_absence_leaderboard(yok_df: pd.DataFrame, top_n: int = 5) -> pd.DataFrame:
+    """Yoklama verisinden en çok devamsızlık yapan öğrencileri döndür."""
+    if yok_df is None or yok_df.empty:
+        return pd.DataFrame(columns=["OgrenciID", "AdSoyad", "Koc", "Grup", "Devamsizlik Sayisi"])
+
+    tmp = yok_df.copy()
+    if "Tarih" in tmp.columns:
+        tmp["Tarih"] = pd.to_datetime(tmp.get("Tarih"), errors="coerce").dt.date
+
+    tmp["KatildiBool"] = tmp.get("Katildi").apply(interpret_attendance_bool)
+    devamsiz = tmp[tmp["KatildiBool"] == False].copy()  # noqa: E712
+    if devamsiz.empty:
+        return pd.DataFrame(columns=["OgrenciID", "AdSoyad", "Koc", "Grup", "Devamsizlik Sayisi"])
+
+    devamsiz["OgrenciIDKey"] = pd.to_numeric(devamsiz.get("OgrenciID"), errors="coerce")
+    devamsiz["OgrenciIDDisplay"] = devamsiz["OgrenciIDKey"].apply(
+        lambda v: "" if pd.isna(v) else str(int(v))
+    )
+    for col in ["AdSoyad", "Koc", "Grup"]:
+        devamsiz[col] = devamsiz.get(col).fillna("").astype(str)
+
+    summary = (
+        devamsiz.groupby(["OgrenciIDDisplay", "AdSoyad", "Koc", "Grup"], dropna=False)
+        .size()
+        .reset_index(name="Devamsizlik Sayisi")
+    )
+    summary = summary.rename(columns={"OgrenciIDDisplay": "OgrenciID"})
+    summary = summary.sort_values(["Devamsizlik Sayisi", "AdSoyad"], ascending=[False, True])
+    if top_n:
+        summary = summary.head(top_n)
+    return summary.reset_index(drop=True)
+
+
 # ==========================
 # Uygulama
 # ==========================
@@ -317,6 +620,31 @@ if uploaded:
     st.session_state["yok"] = yok_yuklu
     st.session_state["tah"] = tah_yuklu
     st.sidebar.success(f"Yüklenen sayfa: {used_sheet}")
+
+drive_default_id = st.session_state.get("drive_file_id", "1EX6e_r6MaPKh6xi03gmOvhVPHFEsSyuB")
+drive_file_id = st.sidebar.text_input(
+    "Google Drive Dosya ID'si",
+    value=drive_default_id,
+    help="Google Drive paylaşım linkindeki kimliği buraya yapıştırın.",
+)
+
+if st.sidebar.button("Drive'dan Excel'i yükle"):
+    cleaned_id = drive_file_id.strip()
+    if not cleaned_id:
+        st.sidebar.error("Lütfen bir dosya ID'si girin.")
+    else:
+        try:
+            with st.spinner("Google Drive'dan indiriliyor..."):
+                excel_bytes = download_drive_excel(cleaned_id)
+            ogr_yuklu, yok_yuklu, tah_yuklu, used_sheet = load_excel(excel_bytes)
+            st.session_state["ogr"] = ogr_yuklu
+            st.session_state["yok"] = yok_yuklu
+            st.session_state["tah"] = tah_yuklu
+            st.session_state["drive_file_id"] = cleaned_id
+            st.sidebar.success(f"Drive dosyası yüklendi: {used_sheet}")
+        except Exception as exc:
+            st.sidebar.error(f"İndirme başarısız: {exc}")
+
 if "ogr" not in st.session_state:
     st.session_state["ogr"] = pd.DataFrame([
         {"ID":1,"AdSoyad":"Demo Öğrenci","Telefon":"0533","Grup":"U10","Seviye":"Başlangıç","Koc":"Ahmet",
@@ -334,6 +662,7 @@ tah = st.session_state["tah"]
 # ==========================
 # Genel Bakış ve Menü
 # ==========================
+
 
 UYELIK_AY = {0:0, 1:1, 2:3, 3:6, 4:12}
 UYELIK_LABELS = {
@@ -395,16 +724,22 @@ def build_expiry_df(df: pd.DataFrame) -> pd.DataFrame:
     return tmp[cols].sort_values(["KalanGun"], ascending=True, na_position="last")
 
 exp_df = build_expiry_df(ogr)
+absence_leaderboard = build_absence_leaderboard(yok)
 
 menu_secimleri = [
     "Genel Bakış Panosu",
     "Üye Yönetimi",
     "Tüm Üyelikler",
-    "İstatistikler",    
+    "İstatistikler",
     "Dışa Aktarım",
+    COACH_PANEL_MENU,
 ]
 
-secim = st.sidebar.radio("Menü", menu_secimleri, index=0)
+menu_key = "sidebar_menu_choice"
+if menu_key in st.session_state and st.session_state[menu_key] not in menu_secimleri:
+    st.session_state[menu_key] = menu_secimleri[0]
+
+secim = st.sidebar.radio("Menü", menu_secimleri, index=0, key=menu_key)
 
 toplam_ogrenci = len(ogr)
 
@@ -433,8 +768,15 @@ yenileme_penceresi = int(yenileme_maske.sum()) if not exp_df.empty else 0
 
 yenileme_df = exp_df[yenileme_maske] if not exp_df.empty else exp_df
 
+
 if secim == "Genel Bakış Panosu":
     st.header("Genel Bakış Panosu")
+    st.subheader("En Fazla Devamsızlık Yapan 5 Öğrenci")
+    if not absence_leaderboard.empty:
+        st.dataframe(absence_leaderboard, use_container_width=True, hide_index=True)
+    else:
+        st.info("Devamsızlık kaydı bulunmuyor.")
+
     c1, c2, c3 = st.columns(3)
     c1.metric("Toplam Öğrenci", toplam_ogrenci)
     c2.metric("Dondurmuş Öğrenci", dondurmus_say)
@@ -523,7 +865,7 @@ elif secim == "Üye Yönetimi":
                     yeni_kayit.setdefault(col, None)
                 st.session_state["ogr"] = pd.concat([ogr_df, pd.DataFrame([yeni_kayit])], ignore_index=True)
                 st.success("Öğrenci eklendi.")
-                st.experimental_rerun()
+                st.rerun()
 
     with tab_duzenle:
         ogr_df = st.session_state["ogr"]
@@ -596,7 +938,7 @@ elif secim == "Üye Yönetimi":
                     guncel_df.loc[secilen_indeks, "UyelikYenilemeTercihi"] = duzenle_uyelik_yenileme.strip()
                     st.session_state["ogr"] = guncel_df.reset_index(drop=True)
                     st.success("Öğrenci bilgileri güncellendi.")
-                    st.experimental_rerun()
+                    st.rerun()
 
     with tab_yenile:
         ogr_df = st.session_state["ogr"]
@@ -658,7 +1000,7 @@ elif secim == "Üye Yönetimi":
                 else:
                     st.success(f"{satir.get('AdSoyad')} için yenileme tamamlandı.")
 
-                st.experimental_rerun()
+                st.rerun()
 
 
     with tab_sil:
@@ -678,7 +1020,7 @@ elif secim == "Üye Yönetimi":
                     guncel_df = ogr_df.drop(index=silinecekler).reset_index(drop=True)
                     st.session_state["ogr"] = guncel_df
                     st.success("Seçilen öğrenciler silindi.")
-                    st.experimental_rerun()
+                    st.rerun()
 
 
 elif secim == "Tüm Üyelikler":
@@ -744,90 +1086,95 @@ elif secim == "İstatistikler":
     if ogr.empty:
         st.info("Henüz öğrenci bulunmuyor. Önce veri yükleyin veya öğrenci ekleyin.")
     else:
-        yas_serisi = ogr.get("DogumTarihi", pd.Series(dtype=object)).apply(
-            lambda v: compute_age(v, _today)
-        )
-        yas_serisi = pd.to_numeric(yas_serisi, errors="coerce")
+        if "AktifDurumu" in ogr.columns:
+            durum_serisi = ogr["AktifDurumu"].fillna("Pasif").apply(resolve_membership_status)
+        else:
+            aktif_kolon = ogr["Aktif"] if "Aktif" in ogr.columns else pd.Series([True] * len(ogr), index=ogr.index)
+            durum_serisi = aktif_kolon.apply(resolve_membership_status)
 
-        yas_gruplari = pd.cut(
-            yas_serisi,
-            bins=[0, 7, 10, 13, 16, 19, 200],
-            labels=["0-6", "7-9", "10-12", "13-15", "16-18", "19+"],
-            right=False,
-        )
-        yas_df = (
-            yas_gruplari.value_counts(dropna=False)
-            .rename_axis("YasGrubu")
-            .reset_index(name="Sayi")
-        )
-        if not yas_df.empty:
-            yas_df["YasGrubu"] = (
-                yas_df["YasGrubu"].astype(str).replace({"nan": "Belirtilmedi"})
+        aktif_mask = durum_serisi == "Aktif"
+        aktif_ogr = ogr[aktif_mask].copy()
+
+        if aktif_ogr.empty:
+            st.info("İstatistikler için aktif öğrenci bulunmuyor.")
+        else:
+            yas_serisi = aktif_ogr.get("DogumTarihi", pd.Series(dtype=object)).apply(
+                lambda v: compute_age(v, _today)    
             )
-            toplam = yas_df["Sayi"].sum()
-            if toplam > 0:
-                yas_df["Yuzde"] = (yas_df["Sayi"] / toplam * 100).round(1)
+            yas_serisi = pd.to_numeric(yas_serisi, errors="coerce")
 
-        uyelik_serisi = pd.to_numeric(
-            ogr.get("UyelikTercihi", pd.Series(dtype=object)), errors="coerce"
-        )
-        uyelik_serisi = uyelik_serisi.fillna(0).clip(lower=0, upper=4).astype(int)
-        uyelik_etiketleri = (
-            uyelik_serisi.map(UYELIK_LABELS).replace({"": "Belirtilmedi"}).fillna("Belirtilmedi")
-        )
-        uyelik_df = (
-            uyelik_etiketleri.value_counts()
-            .rename_axis("UyelikTercihi")
-            .reset_index(name="Sayi")
-        )
-        if not uyelik_df.empty:
-            toplam_uyelik = uyelik_df["Sayi"].sum()
-            if toplam_uyelik > 0:
-                uyelik_df["Yuzde"] = (uyelik_df["Sayi"] / toplam_uyelik * 100).round(1)
 
-        kol1, kol2 = st.columns(2)
-
-        with kol1:
-            st.subheader("Yaş Grupları Dağılımı")
-            if yas_df.empty or yas_df["Sayi"].sum() == 0:
-                st.info("Yaş grubu hesaplamak için geçerli doğum tarihi bulunamadı.")
-            else:
-                yas_chart = (
-                    alt.Chart(yas_df)
-                    .mark_arc()
-                    .encode(
-                        theta=alt.Theta(field="Sayi", type="quantitative"),
-                        color=alt.Color(field="YasGrubu", type="nominal"),
-                        tooltip=[
-                            alt.Tooltip("YasGrubu:N", title="Yaş Grubu"),
-                            alt.Tooltip("Sayi:Q", title="Öğrenci"),
-                            alt.Tooltip("Yuzde:Q", title="Oran (%)"),
-                        ],
-                    )
+            yas_gruplari = pd.cut(
+                yas_serisi,
+                bins=[0, 7, 10, 13, 16, 19, 200],
+                labels=["0-6", "7-9", "10-12", "13-15", "16-18", "19+"],
+                right=False,
+            )
+            yas_df = (
+                yas_gruplari.value_counts(dropna=False)
+                .rename_axis("YasGrubu")
+                .reset_index(name="Sayi")
+            )
+            if not yas_df.empty:
+                yas_df["YasGrubu"] = (
+                    yas_df["YasGrubu"].astype(str).replace({"nan": "Belirtilmedi"})
                 )
-                st.altair_chart(yas_chart, use_container_width=True)
-                st.dataframe(yas_df, use_container_width=True, hide_index=True)
+                toplam = yas_df["Sayi"].sum()
+                if toplam > 0:
+                    yas_df["Yuzde"] = (yas_df["Sayi"] / toplam * 100).round(1)
 
-        with kol2:
-            st.subheader("Üyelik Tercihi Dağılımı")
-            if uyelik_df.empty or uyelik_df["Sayi"].sum() == 0:
-                st.info("Üyelik tercihi verisi bulunamadı.")
-            else:
-                uyelik_chart = (
-                    alt.Chart(uyelik_df)
-                    .mark_arc()
-                    .encode(
-                        theta=alt.Theta(field="Sayi", type="quantitative"),
-                        color=alt.Color(field="UyelikTercihi", type="nominal"),
-                        tooltip=[
-                            alt.Tooltip("UyelikTercihi:N", title="Üyelik"),
-                            alt.Tooltip("Sayi:Q", title="Öğrenci"),
-                            alt.Tooltip("Yuzde:Q", title="Oran (%)"),
-                        ],
-                    )
-                )
-                st.altair_chart(uyelik_chart, use_container_width=True)
-                st.dataframe(uyelik_df, use_container_width=True, hide_index=True)
+            uyelik_serisi = pd.to_numeric(
+                aktif_ogr.get("UyelikTercihi", pd.Series(dtype=object)), errors="coerce"
+            )
+            uyelik_serisi = uyelik_serisi.fillna(0).clip(lower=0, upper=4).astype(int)
+            uyelik_etiketleri = (
+                uyelik_serisi.map(UYELIK_LABELS).replace({"": "Belirtilmedi"}).fillna("Belirtilmedi")
+            )
+            uyelik_df = (
+                uyelik_etiketleri.value_counts()
+                .rename_axis("UyelikTercihi")
+                .reset_index(name="Sayi")
+            )
+            if not uyelik_df.empty:
+                toplam_uyelik = uyelik_df["Sayi"].sum()
+                if toplam_uyelik > 0:
+                    uyelik_df["Yuzde"] = (uyelik_df["Sayi"] / toplam_uyelik * 100).round(1)
+
+            kol1, kol2 = st.columns(2)
+
+            with kol1:
+                st.subheader("Yaş Grupları Dağılımı")
+                if yas_df.empty or yas_df["Sayi"].sum() == 0:
+                    st.info("Yaş grubu hesaplamak için geçerli doğum tarihi bulunamadı.")
+                else:
+                    yas_chart = alt.Chart(yas_df).mark_arc().encode(
+                            theta=alt.Theta(field="Sayi", type="quantitative"),
+                            color=alt.Color(field="YasGrubu", type="nominal"),
+                            tooltip=[
+                                alt.Tooltip("YasGrubu:N", title="Yaş Grubu"),
+                                alt.Tooltip("Sayi:Q", title="Öğrenci"),
+                                alt.Tooltip("Yuzde:Q", title="Oran (%)"),
+                            ],
+                        )
+                    st.altair_chart(yas_chart, use_container_width=True)
+                    st.dataframe(yas_df, use_container_width=True, hide_index=True)
+
+            with kol2:
+                st.subheader("Üyelik Tercihi Dağılımı")
+                if uyelik_df.empty or uyelik_df["Sayi"].sum() == 0:
+                    st.info("Üyelik tercihi verisi bulunamadı.")
+                else:
+                    uyelik_chart = alt.Chart(uyelik_df).mark_arc().encode(
+                            theta=alt.Theta(field="Sayi", type="quantitative"),
+                            color=alt.Color(field="UyelikTercihi", type="nominal"),
+                            tooltip=[
+                                alt.Tooltip("UyelikTercihi:N", title="Üyelik"),
+                                alt.Tooltip("Sayi:Q", title="Öğrenci"),
+                                alt.Tooltip("Yuzde:Q", title="Oran (%)"),
+                            ],
+                        )
+                    st.altair_chart(uyelik_chart, use_container_width=True)
+                    st.dataframe(uyelik_df, use_container_width=True, hide_index=True)
 
 
 elif secim == "Dışa Aktarım":
@@ -840,3 +1187,97 @@ elif secim == "Dışa Aktarım":
         mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
     )
     st.caption("Otomatik başlık tespiti aktif. Sheet adı: fark etmez (örn. 'students').")
+
+elif secim == COACH_PANEL_MENU:
+    st.header("Yoklama")
+    if yok.empty:
+        st.info("Yoklama kaydı bulunmuyor.")
+    else:
+        yoklama_df = yok.copy()
+        if "Tarih" in yoklama_df.columns:
+            yoklama_df["Tarih"] = pd.to_datetime(yoklama_df.get("Tarih"), errors="coerce").dt.date
+        else:
+            yoklama_df["Tarih"] = None
+
+        yoklama_df["KatildiBool"] = yoklama_df.get("Katildi").apply(interpret_attendance_bool)
+        yoklama_df["Katılım"] = yoklama_df.get("Katildi").apply(format_attendance_value)
+        yoklama_df["AdSoyad"] = yoklama_df.get("AdSoyad").fillna("").astype(str)
+        yoklama_df["Koc"] = yoklama_df.get("Koc").fillna("").astype(str)
+        yoklama_df["Grup"] = yoklama_df.get("Grup").fillna("").astype(str)
+        yoklama_df["Not"] = yoklama_df.get("Not").fillna("").astype(str)
+        yoklama_df["OgrenciID"] = pd.to_numeric(yoklama_df.get("OgrenciID"), errors="coerce")
+
+        tarih_set = {
+            val.date() if isinstance(val, pd.Timestamp) else val
+            for val in yoklama_df["Tarih"].dropna()
+        }
+        tarih_degerleri = sorted(tarih_set, reverse=True)
+        koc_degerleri = sorted({k for k in yoklama_df["Koc"] if k})
+        grup_degerleri = sorted({g for g in yoklama_df["Grup"] if g})
+
+        def format_tarih_option(value):
+            if value is None:
+                return "Tüm Tarihler"
+            if isinstance(value, pd.Timestamp):
+                value = value.date()
+            if isinstance(value, date):
+                return value.isoformat()
+            return str(value)
+
+        filt_col1, filt_col2, filt_col3 = st.columns(3)
+
+        secilen_tarih = filt_col1.selectbox(
+            "Tarih",
+            [None] + tarih_degerleri,
+            format_func=format_tarih_option,
+        )
+        secilen_koc = filt_col2.selectbox(
+            "Koç",
+            [None] + koc_degerleri,
+            format_func=lambda v: "Tüm Koçlar" if v is None else v,
+        )
+        secilen_grup = filt_col3.selectbox(
+            "Grup",
+            [None] + grup_degerleri,
+            format_func=lambda v: "Tüm Gruplar" if v is None else v,
+        )
+
+        filtreli = yoklama_df.copy()
+        if secilen_tarih is not None:
+            filtreli = filtreli[filtreli["Tarih"] == secilen_tarih]
+        if secilen_koc is not None:
+            filtreli = filtreli[filtreli["Koc"] == secilen_koc]
+        if secilen_grup is not None:
+            filtreli = filtreli[filtreli["Grup"] == secilen_grup]
+
+        toplam_kayit = len(filtreli)
+        katilan_say = int((filtreli["KatildiBool"] == True).sum())  # noqa: E712
+        katilmayan_say = int((filtreli["KatildiBool"] == False).sum())  # noqa: E712
+        kayit_yok_say = int(filtreli["KatildiBool"].isna().sum())
+
+        met1, met2, met3, met4 = st.columns(4)
+        met1.metric("Toplam Kayıt", toplam_kayit)
+        met2.metric("Katıldı", katilan_say)
+        met3.metric("Katılmadı", katilmayan_say)
+        met4.metric("Kaydedilmedi", kayit_yok_say)
+
+        if toplam_kayit == 0:
+            st.info("Seçilen filtrelere uygun yoklama kaydı bulunamadı.")
+        else:
+            goruntulenecek = filtreli.copy()
+            goruntulenecek = goruntulenecek.sort_values(
+                ["Tarih", "Grup", "AdSoyad"], ascending=[False, True, True], kind="stable"
+            )
+            goruntulenecek["OgrenciID"] = goruntulenecek["OgrenciID"].apply(
+                lambda v: "" if pd.isna(v) else str(int(v))
+            )
+            goruntulenecek["Tarih"] = goruntulenecek["Tarih"].apply(
+                lambda v: v.isoformat() if isinstance(v, date) else ""
+            )
+            tablo_kolonlari = ["Tarih", "Grup", "OgrenciID", "AdSoyad", "Koc", "Katılım", "Not"]
+            mevcut_kolonlar = [kol for kol in tablo_kolonlari if kol in goruntulenecek.columns]
+            st.dataframe(
+                goruntulenecek[mevcut_kolonlar],
+                use_container_width=True,
+                hide_index=True,
+            )
