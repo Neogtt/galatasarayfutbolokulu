@@ -11,16 +11,11 @@ import io
 from datetime import date
 import datetime as dt
 from typing import Tuple, Optional, List, Dict, Any
-from collections.abc import Mapping
 
 import pandas as pd
 import streamlit as st
 import altair as alt
 import requests
-from google.oauth2 import service_account
-from googleapiclient.discovery import build
-from googleapiclient.errors import HttpError
-from googleapiclient.http import MediaIoBaseDownload
 
 # ==========================
 # Normalizasyon
@@ -102,87 +97,6 @@ HEADER_HINTS = {"adi","soyadi","telefon","grup","koc","kayit","uyelik","seviye"}
 COACH_PANEL_MENU = "Yoklama"
 ATTENDANCE_SELECTIONS = ["Kaydedilmedi", "Katıldı", "Katılmadı"]
 
-APP_AUTH_SESSION_KEY = "app_authenticated"
-APP_AUTH_SECRET_KEY = "app_auth"
-APP_PASSWORD_FALLBACK_KEY = "app_password"
-APP_PASSWORD_CANDIDATES = ("password", "pass", "secret")
-GOOGLE_SERVICE_ACCOUNT_SECRET_KEY = "google_service_account"
-GOOGLE_DRIVE_SCOPES = ["https://www.googleapis.com/auth/drive.readonly"]
-GOOGLE_SHEETS_EXPORT_MIME = (
-    "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
-)
-
-
-def _get_secret_block(key: str) -> Optional[Dict[str, Any]]:
-    if key not in st.secrets:
-        return None
-    block = st.secrets[key]
-    if isinstance(block, Mapping):
-        return {str(k): block[k] for k in block}
-    if isinstance(block, dict):
-        return {str(k): v for k, v in block.items()}
-    return None
-
-
-def _get_app_password_from_secrets() -> str:
-    auth_block = _get_secret_block(APP_AUTH_SECRET_KEY)
-    if auth_block:
-        for candidate_key in APP_PASSWORD_CANDIDATES:
-            candidate_value = str(auth_block.get(candidate_key, "")).strip()
-            if candidate_value:
-                return candidate_value
-    try:
-        fallback_secret = st.secrets[APP_PASSWORD_FALLBACK_KEY]
-    except Exception:
-        fallback_secret = ""
-    else:
-        fallback_value = str(fallback_secret).strip()
-        if fallback_value:
-            return fallback_value
-    return ""
-
-
-def ensure_app_authenticated() -> None:
-    """Basit şifre kontrolüyle uygulama erişimini sınırla."""
-    stored_password = _get_app_password_from_secrets()
-    if not stored_password:
-        st.error(
-            "Uygulama şifresi tanımlı değil. Lütfen Streamlit secrets.toml dosyasına"
-            " 'app_auth.password' veya 'app_password' anahtarını ekleyin."
-        )
-        st.stop()
-
-    if st.session_state.get(APP_AUTH_SESSION_KEY):
-        return
-
-    st.title("⚽ Futbol Okulu — Giriş")
-    st.write("Devam etmek için yetkili tarafından paylaşılan şifreyi girin.")
-
-    with st.form("app_login_form"):
-        password_input = st.text_input("Giriş Şifresi", type="password")
-        submitted = st.form_submit_button("Giriş Yap")
-
-    if submitted:
-        if password_input == stored_password:
-            st.session_state[APP_AUTH_SESSION_KEY] = True
-            st.success("Giriş başarılı. Yönlendiriliyorsunuz...")
-            st.rerun()
-        else:
-            st.error("Şifre hatalı. Lütfen tekrar deneyin.")
-
-    st.stop()
-
-
-def _get_service_account_credentials(
-    scopes: Optional[List[str]] = None,
-) -> Optional[service_account.Credentials]:
-    info = _get_secret_block(GOOGLE_SERVICE_ACCOUNT_SECRET_KEY)
-    if not info:
-        return None
-    requested_scopes = scopes or GOOGLE_DRIVE_SCOPES
-    return service_account.Credentials.from_service_account_info(
-        info, scopes=requested_scopes
-    )
 
 def attendance_label_to_value(label: str) -> Optional[bool]:
     """Kullanıcının seçtiği etiket değerini booleana çevir."""
@@ -394,51 +308,6 @@ def download_drive_excel(file_id: str, chunk_size: int = 32768) -> bytes:
     if not file_id:
         raise ValueError("Dosya ID'si boş olamaz.")
 
-    credentials = _get_service_account_credentials()
-    if credentials is not None:
-        try:
-            service = build(
-                "drive", "v3", credentials=credentials, cache_discovery=False
-            )
-            metadata = (
-                service.files()
-                .get(fileId=file_id, fields="mimeType,name")
-                .execute()
-            )
-            mime_type = metadata.get("mimeType", "")
-            if mime_type == "application/vnd.google-apps.spreadsheet":
-                request = service.files().export_media(
-                    fileId=file_id, mimeType=GOOGLE_SHEETS_EXPORT_MIME
-                )
-            else:
-                request = service.files().get_media(fileId=file_id)
-
-            buffer = io.BytesIO()
-            downloader = MediaIoBaseDownload(buffer, request, chunksize=chunk_size)
-            done = False
-            while not done:
-                _, done = downloader.next_chunk()
-
-            content = buffer.getvalue()
-            if not content:
-                raise ValueError("Google Drive dosyası indirilemedi veya boş döndü.")
-            return content
-        except HttpError as exc:
-            status_code = getattr(exc.resp, "status", None)
-            if status_code == 404:
-                raise FileNotFoundError(
-                    "Dosya bulunamadı veya paylaşılmamış olabilir."
-                ) from exc
-            if status_code == 403:
-                service_email = getattr(
-                    credentials, "service_account_email", "hizmet hesabı"
-                )
-                raise PermissionError(
-                    "Google Drive dosyasına erişim yetkisi reddedildi. Lütfen dosyayı"
-                    f" {service_email} hesabıyla paylaşın."
-                ) from exc
-            raise RuntimeError(f"Google Drive indirme hatası: {exc}") from exc
-    
     session = requests.Session()
     params = {"id": file_id, "export": "download"}
     url = "https://drive.google.com/uc"
@@ -742,13 +611,7 @@ def build_absence_leaderboard(yok_df: pd.DataFrame, top_n: int = 5) -> pd.DataFr
 # ==========================
 
 st.set_page_config(page_title="Futbol Okulu", page_icon="⚽", layout="wide")
-
-ensure_app_authenticated()
-
 st.sidebar.title("⚽ Futbol Okulu — Otomatik Başlık")
-if st.sidebar.button("Çıkış Yap", key="logout_button"):
-    st.session_state.pop(APP_AUTH_SESSION_KEY, None)
-    st.rerun()
 
 uploaded = st.sidebar.file_uploader("Excel yükle (.xlsx)", type=["xlsx"])
 if uploaded:
@@ -758,9 +621,7 @@ if uploaded:
     st.session_state["tah"] = tah_yuklu
     st.sidebar.success(f"Yüklenen sayfa: {used_sheet}")
 
-drive_default_id = st.session_state.get(
-    "drive_file_id", "1WogWAT7rt6MANHORr2gd5E787Q_Zo0KtfrQkU1Tazfk"
-)
+drive_default_id = st.session_state.get("drive_file_id", "1EX6e_r6MaPKh6xi03gmOvhVPHFEsSyuB")
 drive_file_id = st.sidebar.text_input(
     "Google Drive Dosya ID'si",
     value=drive_default_id,
