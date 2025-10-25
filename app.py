@@ -342,7 +342,7 @@ def coerce_date_value(value) -> Optional[date]:
     if isinstance(value, float) and pd.isna(value):
         return None
     parsed = pd.to_datetime(value, errors="coerce")
-        # Sayı olarak sadece yıl bilgisi girilmişse (örn. 2010)
+    # Sayı olarak sadece yıl bilgisi girilmişse (örn. 2010)
     if isinstance(value, (int, float)):
         if isinstance(value, float) and not float(value).is_integer():
             # Excel seri numaraları veya ondalıklar için pandas'a bırak.
