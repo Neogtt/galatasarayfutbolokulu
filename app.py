@@ -10,7 +10,7 @@ FUTBOL OKULU — Streamlit (Py3.8+) — OTOMATIK BAŞLIK TESPİTİ
 import io
 from datetime import date
 import datetime as dt
-from typing import Tuple, Optional, List
+from typing import Tuple, Optional, List, Dict, Any
 
 import pandas as pd
 import streamlit as st
